@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "871571419878",
+    "project_id": "hungry-s-bucket",
+    "storage_bucket": "hungry-s-bucket.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:871571419878:android:5e425e68eedfb064c78127",
+        "android_client_info": {
+          "package_name": "com.alok0308.praygagifoodwala"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "871571419878-2b4lot7a2s1fhr6cef83qdgbu1gssb4g.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXFtZZGp-H5gsONKIlmFbnfD55fUKZwBQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "871571419878-2b4lot7a2s1fhr6cef83qdgbu1gssb4g.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

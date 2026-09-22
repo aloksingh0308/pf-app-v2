@@ -1,0 +1,109 @@
+{
+  "expo": {
+    "name": "PrayagiFoodwala",
+    "slug": "praygagifoodwala",
+    "version": "2.2.8",
+    "icon": "./assets/images/icon.png",
+    "scheme": "PrayagiFoodwala",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.alok0308.praygagifoodwala",
+      "supportsTablet": true,
+      "isTabletOnly": false,
+      "config": {
+        "googleMapsApiKey": "AIzaSyD3iGy9ZVkJ5_lJTjapH2XnoQPB6uu9FJI"
+      },
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "We use your photo library so you can choose a profile picture.",
+        "NSPhotoLibraryAddUsageDescription": "We save images to your photo library when you choose to download or share content.",
+        "NSLocationWhenInUseUsageDescription": "We use your location to show nearby restaurants.",
+        "NSCameraUsageDescription": "We use your camera so you can capture profile and order-related photos.",
+        "NSMicrophoneUsageDescription": "We use your microphone only when recording audio features inside the app."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "allowBackup": false,
+      "edgeToEdgeEnabled": true,
+      "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyD3iGy9ZVkJ5_lJTjapH2XnoQPB6uu9FJI"
+        }
+      },
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.alok0308.praygagifoodwala",
+      "statusBar": {
+        "backgroundColor": "#ffffff",
+        "barStyle": "dark-content",
+        "translucent": true
+      },
+      "navigationBar": {
+        "visible": "immersive",
+        "barStyle": "light-content",
+        "backgroundColor": "#000000"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 130,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to access your location while you are using the app."
+        }
+      ],
+      "expo-notifications",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0"
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "92a39ede-b21c-48e1-bc5e-98f8073fb210"
+      }
+    },
+    "owner": "alok0308"
+  }
+}

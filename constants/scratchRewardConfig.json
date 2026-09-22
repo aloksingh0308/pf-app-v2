@@ -1,0 +1,206 @@
+{
+  "freeItems": [
+    {
+      "id": "FREE_FRIES",
+      "title": "Free French Fries",
+      "description": "Get free French Fries on your next order",
+      "freeItemSku": "FRENCH_FRIES",
+      "unlockOrder": 250,
+      "minimumOrder": 299,
+      "weight": 40,
+      "expiryDays": 7,
+      "couponPrefix": "FRIES"
+    },
+    {
+      "id": "FREE_MOMOS",
+      "title": "Free Veg Steam Momos",
+      "description": "Get free Veg Steam Momos on your next order",
+      "freeItemSku": "VEG_STEAM_MOMOS",
+      "unlockOrder": 300,
+      "minimumOrder": 399,
+      "weight": 25,
+      "expiryDays": 7,
+      "couponPrefix": "MOMO"
+    },
+    {
+      "id": "FREE_COKE",
+      "title": "Free Masala Coke",
+      "description": "Get free Masala Coke on your next order",
+      "freeItemSku": "MASALA_COKE",
+      "unlockOrder": 200,
+      "minimumOrder": 249,
+      "weight": 35,
+      "expiryDays": 7,
+      "couponPrefix": "COKE"
+    }
+  ],
+  "flatDiscounts": [
+    {
+      "id": "FLAT_20",
+      "title": "Flat Rs 20 OFF",
+      "description": "Get Rs 20 OFF on your next order",
+      "discountValue": 20,
+      "unlockOrder": 200,
+      "minimumOrder": 249,
+      "weight": 40,
+      "expiryDays": 15,
+      "couponPrefix": "OFF20"
+    },
+    {
+      "id": "FLAT_30",
+      "title": "Flat Rs 30 OFF",
+      "description": "Get Rs 30 OFF on your next order",
+      "discountValue": 30,
+      "unlockOrder": 250,
+      "minimumOrder": 299,
+      "weight": 30,
+      "expiryDays": 15,
+      "couponPrefix": "OFF30"
+    },
+    {
+      "id": "FLAT_50",
+      "title": "Flat Rs 50 OFF",
+      "description": "Get Rs 50 OFF on your next order",
+      "discountValue": 50,
+      "unlockOrder": 300,
+      "minimumOrder": 399,
+      "weight": 15,
+      "expiryDays": 15,
+      "couponPrefix": "OFF50"
+    },
+    {
+      "id": "FLAT_75",
+      "title": "Flat Rs 75 OFF",
+      "description": "Get Rs 75 OFF on your next order",
+      "discountValue": 75,
+      "unlockOrder": 400,
+      "minimumOrder": 499,
+      "weight": 10,
+      "expiryDays": 15,
+      "couponPrefix": "OFF75"
+    },
+    {
+      "id": "FLAT_100",
+      "title": "Flat Rs 100 OFF",
+      "description": "Get Rs 100 OFF on your next order",
+      "discountValue": 100,
+      "unlockOrder": 500,
+      "minimumOrder": 699,
+      "weight": 5,
+      "expiryDays": 15,
+      "couponPrefix": "OFF100"
+    }
+  ],
+  "percentageDiscounts": [
+    {
+      "id": "PERCENT_10",
+      "title": "10% OFF",
+      "description": "Get 10% OFF on your next order",
+      "discountPercent": 10,
+      "maximumDiscount": 40,
+      "unlockOrder": 200,
+      "minimumOrder": 249,
+      "weight": 40,
+      "expiryDays": 15,
+      "couponPrefix": "SAVE10"
+    },
+    {
+      "id": "PERCENT_15",
+      "title": "15% OFF",
+      "description": "Get 15% OFF on your next order",
+      "discountPercent": 15,
+      "maximumDiscount": 60,
+      "unlockOrder": 250,
+      "minimumOrder": 299,
+      "weight": 30,
+      "expiryDays": 15,
+      "couponPrefix": "SAVE15"
+    },
+    {
+      "id": "PERCENT_20",
+      "title": "20% OFF",
+      "description": "Get 20% OFF on your next order",
+      "discountPercent": 20,
+      "maximumDiscount": 80,
+      "unlockOrder": 300,
+      "minimumOrder": 399,
+      "weight": 20,
+      "expiryDays": 15,
+      "couponPrefix": "SAVE20"
+    },
+    {
+      "id": "PERCENT_25",
+      "title": "25% OFF",
+      "description": "Get 25% OFF on your next order",
+      "discountPercent": 25,
+      "maximumDiscount": 120,
+      "unlockOrder": 500,
+      "minimumOrder": 599,
+      "weight": 7,
+      "expiryDays": 15,
+      "couponPrefix": "SAVE25"
+    },
+    {
+      "id": "PERCENT_30",
+      "title": "30% OFF",
+      "description": "Get 30% OFF on your next order",
+      "discountPercent": 30,
+      "maximumDiscount": 150,
+      "unlockOrder": 700,
+      "minimumOrder": 799,
+      "weight": 3,
+      "expiryDays": 15,
+      "couponPrefix": "SAVE30"
+    }
+  ],
+  "coins": [
+    {
+      "id": "COINS_25",
+      "title": "25% Reward Coins",
+      "description": "Earn 25% of order value as reward coins",
+      "multiplierPercent": 25,
+      "unlockOrder": 100,
+      "weight": 35
+    },
+    {
+      "id": "COINS_50",
+      "title": "50% Reward Coins",
+      "description": "Earn 50% of order value as reward coins",
+      "multiplierPercent": 50,
+      "unlockOrder": 150,
+      "weight": 25
+    },
+    {
+      "id": "COINS_75",
+      "title": "75% Reward Coins",
+      "description": "Earn 75% of order value as reward coins",
+      "multiplierPercent": 75,
+      "unlockOrder": 200,
+      "weight": 18
+    },
+    {
+      "id": "COINS_100",
+      "title": "100% Reward Coins",
+      "description": "Earn 100% of order value as reward coins",
+      "multiplierPercent": 100,
+      "unlockOrder": 250,
+      "weight": 12
+    },
+    {
+      "id": "COINS_150",
+      "title": "150% Reward Coins",
+      "description": "Earn 150% of order value as reward coins",
+      "multiplierPercent": 150,
+      "unlockOrder": 300,
+      "weight": 7
+    },
+    {
+      "id": "COINS_200",
+      "title": "200% Reward Coins",
+      "description": "Earn 200% of order value as reward coins",
+      "multiplierPercent": 200,
+      "unlockOrder": 500,
+      "weight": 3
+    }
+  ]
+}
