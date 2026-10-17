@@ -1,3 +1,4 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { RootState } from '@/store';
 import { extractCoordinates, getDistanceInKm } from '@/utils/locationUtils';
 import Ionicons from '@react-native-vector-icons/ionicons';
@@ -10,6 +11,8 @@ import styled from 'styled-components/native';
 import { setActiveRestaurant, setPendingOffer } from '../../services/restaurantContext';
 import type { OfferRecord } from '../../services/offersService';
 import { formatOfferHeadline } from '../../services/offersService';
+import { getRestaurantRating } from '../../services/restaurantService';
+import RestaurantPausedBanner from '@/components/RestaurantPausedBanner';
 
 type Restaurant = {
   id: string;
@@ -85,14 +88,23 @@ export default function CafeDetailsScreen() {
   useEffect(() => {
     setActiveRestaurant(parsedRestaurant);
 
-    // No order-review/rating system exists on the new backend yet (Order has no `review`
-    // field — see backend/src/models/Order.ts), so this always shows "NEW"/"No ratings
-    // yet" now instead of the original per-user reviewed-orders average, same as every
-    // other not-yet-migrated feature this session (wallet, coupons, referrals).
-    const localRating = Number(parsedRestaurant?.rating || 0);
-    const localRatingCount = Number(parsedRestaurant?.ratingCount || 0);
-    setRating(localRating);
-    setRatingCount(localRatingCount);
+    // Show the rating that came with the record immediately, then refresh it live — the
+    // average of every dish rating this restaurant has received (in-app order reviews plus
+    // imported dish reviews), so it's in sync however this screen was opened.
+    setRating(Number(parsedRestaurant?.rating || 0));
+    setRatingCount(Number(parsedRestaurant?.ratingCount || 0));
+    if (!parsedRestaurant?.orgSlug || !parsedRestaurant?.branchCode) return;
+    let active = true;
+    getRestaurantRating(parsedRestaurant.orgSlug, parsedRestaurant.branchCode)
+      .then((live) => {
+        if (!active) return;
+        setRating(live.average);
+        setRatingCount(live.count);
+      })
+      .catch((error) => console.warn('Failed to refresh restaurant rating.', error));
+    return () => {
+      active = false;
+    };
   }, [parsedRestaurant]);
 
   const cafeImage = parsedRestaurant?.coverImage || parsedRestaurant?.image || FALLBACK_CAFE_IMAGE;
@@ -139,14 +151,9 @@ export default function CafeDetailsScreen() {
 
   if (!parsedRestaurant) {
     return (
-      <Container style={{ paddingTop: insets.top }}>
-        <Header>
-          <BackButton onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={22} color="#1b1b1b" />
-          </BackButton>
-          <HeaderTitle numberOfLines={1}>Cafe Details</HeaderTitle>
-          <HeaderRightSpace />
-        </Header>
+      <Container>
+        <PageHeader title="Cafe Details" />
+      <RestaurantPausedBanner restaurantName={cafeName} />
         <EmptyWrap>
           <EmptyText>Unable to load cafe details.</EmptyText>
         </EmptyWrap>
@@ -155,14 +162,8 @@ export default function CafeDetailsScreen() {
   }
 
   return (
-    <Container style={{ paddingTop: insets.top }}>
-      <Header>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color="#1b1b1b" />
-        </BackButton>
-        <HeaderTitle numberOfLines={1}>Cafe Details</HeaderTitle>
-        <HeaderRightSpace />
-      </Header>
+    <Container>
+      <PageHeader title="Cafe Details" />
 
       <ScrollView contentContainerStyle={{ paddingBottom: Math.max(20, insets.bottom + 16) }} showsVerticalScrollIndicator={false}>
         <HeroImage source={{ uri: cafeImage }} resizeMode="cover" />
@@ -261,40 +262,14 @@ export default function CafeDetailsScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: #fff;
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px 12px;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 38px;
-  height: 38px;
-  border-radius: 19px;
-  background-color: #fff6ec;
-  align-items: center;
-  justify-content: center;
-`;
 
-const HeaderTitle = styled.Text`
-  flex: 1;
-  margin-left: 10px;
-  margin-right: 10px;
-  color: #181818;
-  font-size: 18px;
-  font-weight: 800;
-`;
 
-const HeaderRightSpace = styled.View`
-  width: 38px;
-  height: 38px;
-`;
 
 const HeroImage = styled.Image`
   width: 100%;

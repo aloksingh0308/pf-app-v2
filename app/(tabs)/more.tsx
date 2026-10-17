@@ -1,208 +1,100 @@
-import AppButton from '@/components/common/AppButton';
-import { AppColors } from '@/constants/appColors';
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import { ListRow, Palette, SectionCard, SectionTitle } from '@/components/common/ListSection';
 import { AppContent } from '@/constants/appContent';
 import { AppStrings } from '@/constants/appStrings';
 import Ionicons from '@react-native-vector-icons/ionicons';
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { Modal, Share, Text, TouchableOpacity, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSelector } from 'react-redux';
-import styled from 'styled-components/native';
 import { RootState } from '../../store';
-
-import QRCode from 'react-native-qrcode-svg';
 
 export default function MoreScreen() {
   const user = useSelector((state: RootState) => state.auth.user);
-  const [shareModalVisible, setShareModalVisible] = useState(false);
-  const [qrModalVisible, setQrModalVisible] = useState(false);
-
-  const appBaseLink = 'https://play.google.com/store/apps/details?id=com.alok0308.praygagifoodwala';
-  const referralLink = `${appBaseLink}&code=${user?.referralCode}`;
-
-  const handleShareReferral = () => {
-    if (!user?.referralCode) return;
-    setShareModalVisible(true);
-  };
-
-  const handleShareQRCode = () => {
-    setShareModalVisible(false);
-    setQrModalVisible(true);
-  };
-
-  const handleShareSocial = async () => {
-    setShareModalVisible(false);
-    const message = `${AppStrings.referral.shareTemplate.replace('{CODE}', user?.referralCode || '')}\n${referralLink}`;
-    await Share.share({ message, url: referralLink });
-  };
+  const appVersion = String(Constants.expoConfig?.version || '1.0.0');
+  const walletBalance = Number(user?.walletBalance || 0);
+  const coins = Number(user?.earnedCoin || 0);
+  const go = (path: string) => router.push(path as never);
 
   return (
-    <Container>
-      <HeaderContainer>
-        <Title>More</Title>
-      </HeaderContainer>
-
-      <Content>
-        <SectionHeading>{AppStrings.referral.sectionTitle}</SectionHeading>
-        <InfoRow>
-          <InfoLabel>{AppStrings.referral.codeLabel}</InfoLabel>
-          <InfoValue>{user?.referralCode || 'N/A'}</InfoValue>
-        </InfoRow>
-        <InfoRow>
-          <InfoLabel>{AppStrings.referral.countLabel}</InfoLabel>
-          <InfoValue>{Number(user?.referralCount || 0)}</InfoValue>
-        </InfoRow>
-        <HintText>{AppContent.referral.hint}</HintText>
-
-        <AppButton title={AppStrings.referral.shareAction} onPress={handleShareReferral} style={{ marginTop: 12 }} />
-
-        {/* Share Modal */}
-        <Modal
-          visible={shareModalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShareModalVisible(false)}
+    <PageScreen style={styles.page}>
+      <PageHeader title="More" showBack={false} />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Refer and earn, invite friends"
+          onPress={() => go('/user/refer-earn')}
+          style={({ pressed }) => [styles.referCard, pressed && { opacity: 0.92 }]}
         >
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' }}>
-            <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 24, width: '90%' }}>
-              <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 25, textAlign: 'center' }}>Share Referral</Text>
-              <TouchableOpacity onPress={handleShareQRCode} style={{ padding: 12,backgroundColor: AppColors.primary, borderRadius: 8, marginBottom: 12 }}>
-                <Text style={{ fontSize: 16,textAlign:'center', color: '#fff' }}>Share via QR Code</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleShareSocial} style={{ padding: 12,backgroundColor: AppColors.primary, borderRadius: 8 }}>
-                <Text style={{ fontSize: 16,textAlign:'center', color: '#fff' }}>Share via Social Media</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setShareModalVisible(false)} style={{ padding: 12, marginTop: 8,backgroundColor: '#f0f0f0', borderRadius: 8  }}> 
-                <Text style={{ color: '#000', textAlign: 'center',fontWeight:'bold' }}>Cancel</Text>
-              </TouchableOpacity>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.referKicker}>REFER & EARN</Text>
+            <Text style={styles.referTitle}>Invite friends, earn wallet cash</Text>
+            <Text style={styles.referCopy}>{AppContent.referral.hint}</Text>
+            <View style={styles.referCta}>
+              <Text style={styles.referCtaText}>Invite now</Text>
+              <Ionicons name="arrow-forward" size={16} color={Palette.primary} />
             </View>
           </View>
-        </Modal>
-
-        {/* QR Code Modal */}
-        <Modal
-          visible={qrModalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setQrModalVisible(false)}
-        >
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' }}>
-            <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 24, alignItems: 'center', width: '90%' }}>
-              <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 16 }}>Scan to Join with Referral</Text>
-              <QRCode value={referralLink} 
-              size={200} />
-              <Text selectable style={{ marginTop: 16, fontSize: 12, color: '#888', textAlign: 'center' }}>{user?.referralCode}</Text>
-              <TouchableOpacity onPress={() => setQrModalVisible(false)} style={{ padding: 12, marginTop: 8 }}>
-                <Text style={{ color: 'red', textAlign: 'center' }}>Close</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.referIcon}>
+            <Ionicons name="gift" size={40} color="#fff" />
           </View>
-        </Modal>
+        </Pressable>
 
-        <AppButton title={AppStrings.common.walletHistory} onPress={() => router.push('/user/wallet-history' as never)} style={{ marginTop: 12 }} />
+        <SectionTitle>Wallet & Rewards</SectionTitle>
+        <SectionCard>
+          <ListRow
+            icon="wallet-outline"
+            title={AppStrings.common.walletHistory}
+            subtitle={`${coins} reward ${coins === 1 ? 'coin' : 'coins'}`}
+            value={`₹${walletBalance.toFixed(2)}`}
+            onPress={() => go('/user/wallet-history')}
+          />
+          <ListRow icon="ticket-outline" title="My Rewards" subtitle="Scratch cards and coupon wins" onPress={() => go('/user/rewards')} />
+          <ListRow
+            icon="people-outline"
+            title="Refer & Earn"
+            subtitle={user?.referralCode ? `Your code: ${user.referralCode}` : 'Share your code with friends'}
+            value={Number(user?.referralCount || 0) > 0 ? `${Number(user?.referralCount || 0)} joined` : undefined}
+            onPress={() => go('/user/refer-earn')}
+          />
+        </SectionCard>
 
-        <AppButton title="Tic Tac Toe" onPress={() => router.push('/user/tic-tac-toe' as never)} style={{ marginTop: 12 }} />
+        <SectionTitle>Celebrations & Fun</SectionTitle>
+        <SectionCard>
+          <ListRow icon="balloon-outline" title="Customise Your Party" subtitle="Party menus and decoration packages" onPress={() => go('/user/party-booking')} />
+          <ListRow icon="game-controller-outline" title="Tic Tac Toe" subtitle="Play a quick game" onPress={() => go('/user/tic-tac-toe')} />
+        </SectionCard>
 
-        <SectionHeading>Celebrations</SectionHeading>
-        <LinkRow onPress={() => router.push('/user/party-booking' as never)}>
-          <LinkText>Customise Your Party</LinkText>
-          <Ionicons name="chevron-forward" size={20} color={AppColors.muted} />
-        </LinkRow>
+        <SectionTitle>{AppStrings.common.legalSupport}</SectionTitle>
+        <SectionCard>
+          <ListRow icon="headset-outline" title={AppStrings.common.customerSupport} onPress={() => go('/user/support')} />
+          <ListRow icon="document-text-outline" title={AppStrings.common.terms} onPress={() => go('/user/terms-and-conditions')} />
+          <ListRow icon="shield-checkmark-outline" title={AppStrings.common.privacy} onPress={() => go('/user/privacy-policy')} />
+        </SectionCard>
 
-        <SectionHeading>{AppStrings.common.legalSupport}</SectionHeading>
-        <LinkRow onPress={() => router.push('/user/terms-and-conditions' as never)}>
-          <LinkText>{AppStrings.common.terms}</LinkText>
-          <Ionicons name="chevron-forward" size={20} color={AppColors.muted} />
-        </LinkRow>
-        <LinkRow onPress={() => router.push('/user/privacy-policy' as never)}>
-          <LinkText>{AppStrings.common.privacy}</LinkText>
-          <Ionicons name="chevron-forward" size={20} color={AppColors.muted} />
-        </LinkRow>
-        <LinkRow onPress={() => router.push('/user/support' as never)}>
-          <LinkText>{AppStrings.common.customerSupport}</LinkText>
-          <Ionicons name="chevron-forward" size={20} color={AppColors.muted} />
-        </LinkRow>
-      </Content>
-    </Container>
+        <Text style={styles.version}>Version {appVersion}</Text>
+      </ScrollView>
+    </PageScreen>
   );
 }
 
-const Container = styled.SafeAreaView`
-  flex: 1;
-  background-color: ${AppColors.background};
-`;
-
-const HeaderContainer = styled.View`
-  width: 100%;
-  padding: 16px;
-  background-color: ${AppColors.background};
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-  align-items: center;
-  justify-content: center;
-`;
-
-const Title = styled.Text`
-  font-size: 22px;
-  font-weight: bold;
-  color: ${AppColors.textPrimary};
-`;
-
-const Content = styled.ScrollView`
-  flex: 1;
-  padding: 20px;
-`;
-
-const SectionHeading = styled.Text`
-  margin-top: 16px;
-  font-size: 16px;
-  font-weight: 700;
-  color: ${AppColors.textPrimary};
-  margin-bottom: 8px;
-`;
-
-const InfoRow = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  padding: 16px 0;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-  align-items: center;
-`;
-
-const InfoLabel = styled.Text`
-  font-size: 14px;
-  color: ${AppColors.textSecondary};
-  font-weight: 500;
-  flex: 1;
-`;
-
-const InfoValue = styled.Text`
-  font-size: 14px;
-  color: ${AppColors.textPrimary};
-  font-weight: 600;
-  flex: 1;
-  text-align: right;
-`;
-
-const HintText = styled.Text`
-  margin-top: 12px;
-  color: ${AppColors.textSecondary};
-  font-size: 12px;
-  line-height: 18px;
-`;
-
-const LinkRow = styled.TouchableOpacity`
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 0;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-`;
-
-const LinkText = styled.Text`
-  font-size: 14px;
-  color: ${AppColors.textPrimary};
-  font-weight: 600;
-`;
+const styles = StyleSheet.create({
+  page: { flex: 1, backgroundColor: Palette.page },
+  content: { padding: 16, paddingBottom: 40 },
+  referCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Palette.primary,
+    borderRadius: 20,
+    padding: 18,
+    overflow: 'hidden',
+  },
+  referKicker: { color: '#ffe3c4', fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
+  referTitle: { color: '#fff', fontSize: 18, fontWeight: '800', marginTop: 4, lineHeight: 23 },
+  referCopy: { color: '#fff4e8', fontSize: 12.5, lineHeight: 18, marginTop: 6 },
+  referCta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 14, backgroundColor: '#fff', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 },
+  referCtaText: { color: Palette.primary, fontWeight: '800', fontSize: 13 },
+  referIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
+  version: { textAlign: 'center', color: Palette.textMuted, fontSize: 12, marginTop: 28 },
+});

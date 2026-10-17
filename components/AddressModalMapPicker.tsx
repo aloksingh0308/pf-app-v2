@@ -1,7 +1,7 @@
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as Location from 'expo-location';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackHandler, Platform, View } from 'react-native';
+import { BackHandler, Platform, Pressable, View } from 'react-native';
 import MapView, { Circle, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
@@ -709,6 +709,17 @@ const AddressModalMapPicker = memo(function AddressModalMapPicker({
             value={locationSearchText}
             onChangeText={handleLocationSearchChange}
           />
+          {locationSearchText.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              hitSlop={10}
+              onPress={() => handleLocationSearchChange('')}
+              style={{ marginLeft: 8, padding: 2 }}
+            >
+              <Ionicons name="close-circle" size={20} color="#b0b0b0" />
+            </Pressable>
+          ) : null}
         </PlaceSearchInputWrap>
         {placePredictions.length > 0 ? (
           <PlacesDropdown>

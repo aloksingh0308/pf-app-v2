@@ -1,4 +1,4 @@
-import { ModifierGroup, ProductWithFirebaseId } from "@/types/Product";
+import { FoodType, ModifierGroup, ProductWithFirebaseId } from "@/types/Product";
 import { apiClient } from "../utils/apiClient";
 import { getActiveOrgSlug, getActiveBranchCode, getActiveRestaurantId, onActiveRestaurantChanged } from "./restaurantContext";
 
@@ -21,6 +21,8 @@ interface BackendMenuItem {
   price: number;
   taxPercent: number;
   categoryId?: string | null;
+  couponExcluded?: boolean;
+  foodType?: FoodType;
   images?: string[];
   isAvailable: boolean;
   outOfStock: boolean;
@@ -144,9 +146,11 @@ function mapToMenuItem(item: BackendMenuItem): ProductWithFirebaseId {
     qty: null,
     serves: null,
     categoryId: item.categoryId || null,
+    couponExcluded: Boolean(item.couponExcluded),
     cafeId: activeRestaurantId,
     restaurantId: activeRestaurantId,
     emoji: null,
+    foodType: item.foodType || "VEG",
     available: item.status === "ACTIVE" && item.isAvailable,
     inStock: !item.outOfStock,
     hasHalfPortion: false,

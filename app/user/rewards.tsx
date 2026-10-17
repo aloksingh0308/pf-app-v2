@@ -1,9 +1,9 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import ScratchRewardModal from '@/components/common/ScratchRewardModal';
 import { AppColors } from '@/constants/appColors';
 import { rewardService, type UserRewardItem } from '@/services/rewardService';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as Clipboard from 'expo-clipboard';
-import { router } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -71,13 +71,7 @@ export default function RewardsScreen() {
 
   return (
     <Container>
-      <Header style={{ paddingTop: Math.max(insets.top + 8, 18) }}>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={AppColors.textPrimary} />
-        </BackButton>
-        <HeaderTitle>Rewards</HeaderTitle>
-        <HeaderSpacer />
-      </Header>
+      <PageHeader title="Rewards" />
 
       <FlatList
         data={rewards}
@@ -186,7 +180,7 @@ export default function RewardsScreen() {
                           <CoinInfoTitle>You won {Math.floor(Number(item.coinsEarned || 0))} coins</CoinInfoTitle>
                         ) : null}
                         <CoinInfoText>
-                          Scratch this reward to add coins in Reward coins
+                          <Ionicons name="checkmark-circle" size={14} color="#1B8F3A" /> Scratched · added to your Reward coins
                         </CoinInfoText>
                       </CoinInfoCard>
                     ) : (
@@ -279,40 +273,14 @@ export default function RewardsScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: #f7f8fa;
 `;
 
-const Header = styled.View`
-  padding: 12px 18px 10px;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  background-color: #f7f8fa;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  border-radius: 20px;
-  align-items: center;
-  justify-content: center;
-  background-color: #ffffff;
-  border-width: 1px;
-  border-color: #e7ebf0;
-`;
 
-const HeaderTitle = styled.Text`
-  font-size: 22px;
-  font-weight: 800;
-  color: ${AppColors.textPrimary};
-`;
 
-const HeaderSpacer = styled.View`
-  width: 40px;
-  height: 40px;
-`;
 
 const HeroCard = styled.View`
   background-color: #ffffff;

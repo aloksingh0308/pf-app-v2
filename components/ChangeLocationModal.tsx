@@ -53,6 +53,7 @@ export default function ChangeLocationModal({ visible, onClose }: Props) {
           latitude: pin.latitude,
           longitude: pin.longitude,
           timestamp: Date.now(),
+          source: 'selected',
           addressLine: trimmedAddress || null,
           addressResolvedAt: trimmedAddress ? Date.now() : null,
         },

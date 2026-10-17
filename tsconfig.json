@@ -6,6 +6,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@msg91comm/sendotp-react-native": [
+        "./types/msg91-sendotp.d.ts"
       ]
     }
   },

@@ -101,6 +101,8 @@ export const userService = {
     balanceAfter: number;
     description: string;
     createdAt: string;
+    /** `unit: 'coins'` marks a reward-coin movement (same ledger as wallet money). */
+    metadata?: { unit?: string } & Record<string, unknown>;
   }>> => apiClient.get('/public/customers/me/wallet-transactions'),
 
   getUserProfile: async (_uid: string, _email?: string | null): Promise<UserProfile | null> => {

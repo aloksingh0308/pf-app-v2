@@ -1,3 +1,4 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { PartyColors } from '@/constants/partyTheme';
 import { showAlert } from '@/services/alertService';
 import {
@@ -400,7 +401,8 @@ export default function PartyBookingScreen() {
 
   if (loading) {
     return (
-      <Container style={{ paddingTop: insets.top }}>
+      <Container>
+        <PageHeader title="Party Booking" />
         <Center>
           <ActivityIndicator size="large" color={PartyColors.gold} />
         </Center>
@@ -410,14 +412,8 @@ export default function PartyBookingScreen() {
 
   if (menus.length === 0) {
     return (
-      <Container style={{ paddingTop: insets.top }}>
-        <TopBar>
-          <BackButton onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={22} color={PartyColors.white} />
-          </BackButton>
-          <TopBarTitle>Party Booking</TopBarTitle>
-          <TopBarSpacer />
-        </TopBar>
+      <Container>
+        <PageHeader title="Party Booking" />
         <Center>
           <EmptyText>No party menus are available right now. Please check back soon.</EmptyText>
         </Center>
@@ -427,7 +423,8 @@ export default function PartyBookingScreen() {
 
   if (bookingComplete) {
     return (
-      <Container style={{ paddingTop: insets.top }}>
+      <Container>
+        <PageHeader title="Party Booking" />
         <Center>
           <Ionicons name="checkmark-circle" size={72} color={PartyColors.gold} />
           <SuccessTitle>Booking Request Sent!</SuccessTitle>
@@ -461,14 +458,8 @@ export default function PartyBookingScreen() {
   const reservedFooterHeight = showFooterSummary ? footerHeight || 150 : 0;
 
   return (
-    <Container style={{ paddingTop: insets.top }}>
-      <TopBar>
-        <BackButton onPress={goBack}>
-          <Ionicons name="arrow-back" size={22} color={PartyColors.white} />
-        </BackButton>
-        <TopBarTitle numberOfLines={1}>{selectedMenu?.name || 'Party Booking'}</TopBarTitle>
-        <TopBarSpacer />
-      </TopBar>
+    <Container>
+      <PageHeader title={selectedMenu?.name || 'Party Booking'} onBack={goBack} />
 
       <StepperWrap>
         <StepperTextRow>
@@ -1066,7 +1057,7 @@ function DetailsPhaseView({ form, onChange }: { form: CustomerForm; onChange: (u
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: ${PartyColors.black};
 `;
@@ -1078,35 +1069,9 @@ const Center = styled.View`
   padding: 24px;
 `;
 
-const TopBar = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom-width: 1px;
-  border-bottom-color: ${PartyColors.border};
-`;
 
-const BackButton = styled(TouchableOpacity)`
-  width: 38px;
-  height: 38px;
-  border-radius: 19px;
-  align-items: center;
-  justify-content: center;
-  background-color: ${PartyColors.surface};
-`;
 
-const TopBarTitle = styled.Text`
-  flex: 1;
-  text-align: center;
-  color: ${PartyColors.white};
-  font-size: 17px;
-  font-weight: 800;
-  margin: 0 8px;
-`;
 
-const TopBarSpacer = styled.View`
-  width: 38px;
-`;
 
 const StepperWrap = styled.View`
   padding: 14px 18px 12px;

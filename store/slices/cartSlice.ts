@@ -1,3 +1,4 @@
+import { getDealBundleQuantity, getDealUnitQuantity } from '@/utils/dealCart';
 // store/slices/cartSlice.ts
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { Product } from '../../types/Product';
@@ -28,29 +29,17 @@ const safeQuantity = (value: unknown) => {
   return Math.max(1, Math.round(parsed));
 };
 
-const gcd = (a: number, b: number): number => {
-  let x = Math.abs(a);
-  let y = Math.abs(b);
-  while (y !== 0) {
-    const temp = y;
-    y = x % y;
-    x = temp;
-  }
-  return x || 1;
-};
 
 const getDealUnitMap = (items: CartItem[]) => {
   if (items.length === 0) {
     return { bundleQuantity: 1, units: new Map<string, number>() };
   }
 
-  const quantities = items.map((item) => safeQuantity(item.quantity));
-  const bundleQuantity = quantities.reduce((acc, value) => gcd(acc, value), quantities[0]);
+  const bundleQuantity = getDealBundleQuantity(items);
   const units = new Map<string, number>();
 
   items.forEach((item) => {
-    const key = getCartItemKey(item);
-    units.set(key, Math.max(1, Math.round(safeQuantity(item.quantity) / Math.max(1, bundleQuantity))));
+    units.set(getCartItemKey(item), getDealUnitQuantity(item, bundleQuantity));
   });
 
   return {

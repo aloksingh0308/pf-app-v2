@@ -1,3 +1,5 @@
+import { isNetworkFailure } from './connectivity';
+import { NETWORK_ERROR_CODE } from '../utils/apiClient';
 import { getUserFriendlyErrorMessage } from '@/utils/errorMessages';
 import { Alert } from 'react-native';
 
@@ -41,5 +43,12 @@ export function showErrorAlert(
   fallbackMessage = 'Something went wrong. Please try again.',
   title = 'Oops'
 ) {
+  // Connection failures are shown by the full-screen fallback (ConnectivityGate) instead of
+  // a popup on top of it.
+  if (isConnectionError(error)) return;
   showAlert(title, getUserFriendlyErrorMessage(error, fallbackMessage));
+}
+
+function isConnectionError(error: unknown): boolean {
+  return (error as { code?: string })?.code === NETWORK_ERROR_CODE || isNetworkFailure(error);
 }

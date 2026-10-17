@@ -1,8 +1,10 @@
+import { dobToIso, isoToDob } from '@/utils/dateOfBirth';
+import DateOfBirthPicker from '@/components/DateOfBirthPicker';
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppButton from '@/components/common/AppButton';
 import { AppColors } from '@/constants/appColors';
 import { AppContent } from '@/constants/appContent';
 import { useAppLoader } from '@/hooks/useAppLoader';
-import Ionicons from '@react-native-vector-icons/ionicons';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -38,13 +40,7 @@ export default function EditProfileScreen() {
   if (!user) {
     return (
       <Container>
-        <Header>
-          <BackButton onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={24} color="#282939" />
-          </BackButton>
-          <Title>Edit Profile</Title>
-          <Spacer />
-        </Header>
+        <PageHeader title="Edit Profile" />
         <Center>
           <InfoText>User not found.</InfoText>
         </Center>
@@ -52,17 +48,7 @@ export default function EditProfileScreen() {
     );
   }
 
-  const formatDateOfBirth = (isoDate: string) => {
-    if (!isoDate) return '';
-    const parsed = new Date(isoDate);
-    if (!isoDate.includes('-') || isNaN(parsed.getTime())) {
-      return isoDate;
-    }
-    const day = String(parsed.getDate()).padStart(2, '0');
-    const month = String(parsed.getMonth() + 1).padStart(2, '0');
-    const year = parsed.getFullYear();
-    return `${day}/${month}/${year}`;
-  };
+  const formatDateOfBirth = isoToDob;
 
   const validateDateOfBirth = (dob: string) => {
     const dobRegex = /^(0[1-9]|[12]\d|3[01])\/(0[1-9]|1[0-2])\/\d{4}$/;
@@ -74,10 +60,7 @@ export default function EditProfileScreen() {
     return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
   };
 
-  const getIsoDateFromDob = (dob: string) => {
-    const [day, month, year] = dob.split('/').map(Number);
-    return new Date(year, month - 1, day).toISOString().split('T')[0];
-  };
+  const getIsoDateFromDob = dobToIso;
 
   const uploadProfileImageIfNeeded = async (uri: string) => {
     if (!uri) return DEFAULT_PROFILE_IMAGE;
@@ -160,13 +143,7 @@ export default function EditProfileScreen() {
 
   return (
     <Container>
-      <Header>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color="#282939" />
-        </BackButton>
-        <Title>Edit Profile</Title>
-        <Spacer />
-      </Header>
+      <PageHeader title="Edit Profile" />
 
       <Content>
         <ProfileImageContainer>
@@ -192,15 +169,7 @@ export default function EditProfileScreen() {
         <Input value={phoneNumber} editable={false} placeholderTextColor="#999" />
 
         <Label>Date of Birth</Label>
-        <Input
-          value={dateOfBirth}
-          onChangeText={setDateOfBirth}
-          placeholder="DD/MM/YYYY"
-          placeholderTextColor="#999"
-          keyboardType="numbers-and-punctuation"
-          maxLength={10}
-          editable={!saving}
-        />
+        <DateOfBirthPicker value={dateOfBirth} onChange={setDateOfBirth} placeholder="Select date of birth" disabled={saving} />
 
         <AppButton
           title="Save Changes"
@@ -216,37 +185,14 @@ export default function EditProfileScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: ${AppColors.background};
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const Spacer = styled.View`
-  width: 40px;
-  height: 40px;
-`;
 
-const Title = styled.Text`
-  font-size: 22px;
-  font-weight: 700;
-  color: ${AppColors.textPrimary};
-`;
 
 const Content = styled.ScrollView`
   flex: 1;

@@ -1,6 +1,11 @@
+import { ApiError } from './apiClient';
+
 export function getUserFriendlyErrorMessage(error: unknown, fallbackMessage = 'Something went wrong. Please try again.'): string {
   const code = String((error as any)?.code || '').toLowerCase();
   const message = String((error as any)?.message || '').toLowerCase();
+
+  // Backend API errors already carry a user-facing validation or service message.
+  if (error instanceof ApiError && error.status > 0 && error.message) return error.message;
 
   // Auth-specific errors — check before generic network test so they are not swallowed
   if (code.includes('invalid-credential') || code.includes('wrong-password') || code.includes('invalid-login-credentials')) {

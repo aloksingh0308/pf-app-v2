@@ -1,19 +1,12 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { AppColors } from '@/constants/appColors';
-import Ionicons from '@react-native-vector-icons/ionicons';
-import { router } from 'expo-router';
 import React from 'react';
 import styled from 'styled-components/native';
 
 export default function TermsAndConditionsScreen() {
   return (
     <Container>
-      <Header>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color="#282939" />
-        </BackButton>
-        <Title>Terms & Conditions</Title>
-        <Spacer />
-      </Header>
+      <PageHeader title="Terms & Conditions" />
 
       <Content>
         <MetaText>Effective Date: 1 March 2026</MetaText>
@@ -77,36 +70,14 @@ export default function TermsAndConditionsScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: ${AppColors.background};
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const Spacer = styled.View`
-  min-width: 48px;
-`;
 
-const Title = styled.Text`
-  font-size: 20px;
-  font-weight: 700;
-  color: ${AppColors.textPrimary};
-`;
 
 const Content = styled.ScrollView.attrs({
   contentContainerStyle: {

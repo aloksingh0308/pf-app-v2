@@ -1,52 +1,42 @@
+import { fetchDrivingRoute } from '@/utils/trackingRoute';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import PageHeader from '@/components/common/PageHeader';
 import { AppColors } from '@/constants/appColors';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Platform, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getMyOrders } from '@/services/orderService';
+import { getMyOrders, getOrderTracking } from '@/services/orderService';
 import { findRestaurantByAnyId } from '@/services/restaurantService';
+import { getOrderStage, isOnTheWay, isOrderFinished, orderStatusMessage } from '@/utils/orderStatus';
+import { usePolling } from '@/utils/polling';
+import { isRateLimited } from '@/utils/apiClient';
+
+const TRACKING_POLL_MS = 10_000;
 
 const getEstimatedTime = (distance: number) => 15 + Math.ceil(distance) * 5;
 
 type Coordinates = { latitude: number; longitude: number };
-const GOOGLE_MAPS_API_KEY = String(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '').trim();
 const TRACK_ORDER_BANNER_AD_UNIT_ID =String(process.env.EXPO_PUBLIC_TRACK_ORDER_BANNER_AD_UNIT_ID || '').trim();
 //  __DEV__
 //   ? 'ca-app-pub-2598300953281179/5310825556'
 //   : String(process.env.EXPO_PUBLIC_TRACK_ORDER_BANNER_AD_UNIT_ID || '').trim();
 const DELIVERY_PARTNER_MARKER_IMAGE = require('../../assets/images/delivery_partner_marker.png');
-const CALL_BUTTON_SAFE_BOTTOM = 114;
-
-type RouteInfo = {
-  points: Coordinates[];
-  durationSec: number;
-  distanceMeters: number;
-};
 
 type TrackingDoc = {
   partnerLocation?: { latitude?: number; longitude?: number } | null;
   cafeLocation?: { latitude?: number; longitude?: number } | null;
   deliveryLocation?: { latitude?: number; longitude?: number } | null;
-  customerPhone?: string;
+  partner?: { name: string; phone: string } | null;
+  restaurantPhone?: string;
 };
 
 const areCoordinatesEqual = (left: Coordinates | null, right: Coordinates | null): boolean => {
   if (!left && !right) return true;
   if (!left || !right) return false;
   return left.latitude === right.latitude && left.longitude === right.longitude;
-};
-
-const areCoordinateListsEqual = (left: Coordinates[], right: Coordinates[]): boolean => {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (!areCoordinatesEqual(left[index], right[index])) {
-      return false;
-    }
-  }
-  return true;
 };
 
 const getDistanceKm = (start: Coordinates, end: Coordinates): number => {
@@ -60,52 +50,6 @@ const getDistanceKm = (start: Coordinates, end: Coordinates): number => {
     + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return 6371 * c;
-};
-
-const getRegionForEndpoints = (start: Coordinates, end: Coordinates) => {
-  const distanceKm = getDistanceKm(start, end);
-  const minLat = Math.min(start.latitude, end.latitude);
-  const maxLat = Math.max(start.latitude, end.latitude);
-  const minLng = Math.min(start.longitude, end.longitude);
-  const maxLng = Math.max(start.longitude, end.longitude);
-  const latDiff = Math.abs(maxLat - minLat);
-  const lngDiff = Math.abs(maxLng - minLng);
-
-  // Distance-based floor for zooming: very close routes get a much tighter view.
-  const minDelta = distanceKm < 0.05
-    ? 0.0012
-    : distanceKm < 0.2
-      ? 0.0022
-      : distanceKm < 0.5
-        ? 0.004
-        : distanceKm < 1.5
-          ? 0.008
-          : distanceKm < 4
-            ? 0.02
-            : distanceKm < 10
-              ? 0.05
-              : distanceKm < 25
-                ? 0.12
-                : 0.25;
-
-  // Make markers sit near opposite corners by expanding deltas from edge padding ratio.
-  const cornerPaddingRatio = 0.14;
-  const requiredLatDelta = latDiff > 0
-    ? latDiff / (1 - cornerPaddingRatio * 2)
-    : minDelta;
-  const requiredLngDelta = lngDiff > 0
-    ? lngDiff / (1 - cornerPaddingRatio * 2)
-    : minDelta;
-
-  const latitudeDelta = Math.max(minDelta, requiredLatDelta);
-  const longitudeDelta = Math.max(minDelta, requiredLngDelta);
-
-  return {
-    latitude: (minLat + maxLat) / 2,
-    longitude: (minLng + maxLng) / 2,
-    latitudeDelta,
-    longitudeDelta,
-  };
 };
 
 const toNumberOrNull = (value: unknown): number | null => {
@@ -145,24 +89,10 @@ const isCoordinates = (value: unknown): value is Coordinates => {
 
 const normalizeStatus = (value: unknown): string => String(value || '').trim().toLowerCase();
 
-const isPickedStatus = (status: string) => {
-  return (
-    status.includes('picked')
-    || status.includes('dispatch')
-    || status.includes('on the way')
-    || status.includes('out_for_delivery')
-    || status.includes('out for delivery')
-  );
-};
-
-const isTerminalStatus = (status: string) => {
-  return (
-    status.includes('deliver')
-    || status.includes('cancel')
-    || status.includes('reject')
-    || status.includes('fail')
-  );
-};
+// Exact status matching (utils/orderStatus) — "out_for_delivery" contains "deliver", so
+// the old substring checks treated an order on its way as already delivered.
+const isPickedStatus = (status: string) => isOnTheWay(status);
+const isTerminalStatus = (status: string) => isOrderFinished(status);
 
 const extractCafeCoordinatesFromOrder = (order: any): Coordinates | null => {
   const restaurantLocation = order?.restaurantLocation || order?.cafeLocation || order?.location || {};
@@ -189,9 +119,8 @@ const extractCafeCoordinates = async (order: any, tracking: TrackingDoc | null):
   }
 
   try {
-    // The new backend's Branch model has no lat/lng field yet (address is
-    // line1/city/etc. only — see restaurantService.ts) — this returns null either way,
-    // same as the Firestore version already did for any restaurant with no location set.
+    // Fallback for when live tracking hasn't loaded yet — the directory record carries the
+    // branch's own latitude/longitude (null when the restaurant hasn't set a location).
     const restaurant = await findRestaurantByAnyId(cafeId) as Record<string, unknown> | null;
     const location = (restaurant?.location || {}) as Record<string, unknown>;
     return toCoordinates(
@@ -228,138 +157,65 @@ const extractPartnerCoordinates = (order: any, tracking: TrackingDoc | null): Co
   return toCoordinates(liveLocation?.latitude, liveLocation?.longitude);
 };
 
-const fetchGoogleDrivingRoute = async (start: Coordinates, end: Coordinates): Promise<RouteInfo | null> => {
-  if (!GOOGLE_MAPS_API_KEY) {
-    return null;
-  }
-
-  try {
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${start.latitude},${start.longitude}&destination=${end.latitude},${end.longitude}&mode=driving&key=${GOOGLE_MAPS_API_KEY}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const route = data?.routes?.[0];
-    const encoded = route?.overview_polyline?.points;
-    const leg = route?.legs?.[0];
-
-    if (!encoded || !leg) {
-      return null;
-    }
-
-    const decodePolyline = (encodedPolyline: string): Coordinates[] => {
-      let index = 0;
-      let lat = 0;
-      let lng = 0;
-      const coordinates: Coordinates[] = [];
-
-      while (index < encodedPolyline.length) {
-        let b;
-        let shift = 0;
-        let result = 0;
-        do {
-          b = encodedPolyline.charCodeAt(index++) - 63;
-          result |= (b & 0x1f) << shift;
-          shift += 5;
-        } while (b >= 0x20);
-        const deltaLat = (result & 1) !== 0 ? ~(result >> 1) : (result >> 1);
-        lat += deltaLat;
-
-        shift = 0;
-        result = 0;
-        do {
-          b = encodedPolyline.charCodeAt(index++) - 63;
-          result |= (b & 0x1f) << shift;
-          shift += 5;
-        } while (b >= 0x20);
-        const deltaLng = (result & 1) !== 0 ? ~(result >> 1) : (result >> 1);
-        lng += deltaLng;
-
-        coordinates.push({
-          latitude: lat / 1e5,
-          longitude: lng / 1e5,
-        });
-      }
-
-      return coordinates;
-    };
-
-    const points = decodePolyline(String(encoded));
-    if (points.length < 2) {
-      return null;
-    }
-
-    return {
-      points,
-      durationSec: Number(leg?.duration?.value || 0),
-      distanceMeters: Number(leg?.distance?.value || 0),
-    };
-  } catch {
-    return null;
-  }
-};
-
-const fetchDrivingRoute = async (start: Coordinates, end: Coordinates): Promise<RouteInfo> => {
-  const googleRoute = await fetchGoogleDrivingRoute(start, end);
-  if (googleRoute) {
-    return googleRoute;
-  }
-
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const bestRoute = data?.routes?.[0];
-    const route = bestRoute?.geometry?.coordinates;
-
-    if (!Array.isArray(route) || route.length < 2) {
-      return {
-        points: [start, end],
-        durationSec: 0,
-        distanceMeters: 0,
-      };
-    }
-
-    const points = route
-      .map((pair: unknown) => {
-        if (!Array.isArray(pair) || pair.length < 2) {
-          return null;
-        }
-        return toCoordinates(pair[1], pair[0]);
-      })
-      .filter((point: Coordinates | null): point is Coordinates => point !== null);
-
-    return {
-      points: points.length >= 2 ? points : [start, end],
-      durationSec: Number(bestRoute?.duration || 0),
-      distanceMeters: Number(bestRoute?.distance || 0),
-    };
-  } catch {
-    return {
-      points: [start, end],
-      durationSec: 0,
-      distanceMeters: 0,
-    };
-  }
-};
+// Both providers must settle before the next tracking poll; always retain a usable map.
+function DeliveryPartnerMarker({ coordinate }: { coordinate: Coordinates }) {
+  const marker = useRef<React.ElementRef<typeof Marker> | null>(null);
+  const [imageReady, setImageReady] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [trackingView, setTrackingView] = useState(true);
+  useEffect(() => {
+    if (!imageReady) return;
+    // Android snapshots marker children. Keep tracking until the decoded image has painted.
+    setTrackingView(true);
+    const timer = setTimeout(() => {
+      marker.current?.redraw();
+      setTrackingView(false);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [imageReady, coordinate.latitude, coordinate.longitude]);
+  return <Marker ref={marker} coordinate={coordinate} title="Delivery partner" identifier="delivery-partner"
+    anchor={{ x: 0.5, y: 1 }} style={{ width: 40, height: 40 }} zIndex={10} tracksViewChanges={trackingView} pinColor="#f87916">
+    {!imageFailed && <View collapsable={false} style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+      <Image source={DELIVERY_PARTNER_MARKER_IMAGE} style={styles.partnerMarkerImage} resizeMode="contain"
+        fadeDuration={0} onLoad={() => setImageReady(true)}
+        onError={() => { setImageFailed(true); setImageReady(true); }} />
+    </View>}
+  </Marker>;
+}
 
 const TrackOrderScreen = () => {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView | null>(null);
   const isMapReadyRef = useRef(false);
   const isMapLaidOutRef = useRef(false);
   const lastOrderFingerprintRef = useRef('');
   const lastFitKeyRef = useRef('');
 
+  const attachMap = useCallback((map: MapView | null) => {
+    mapRef.current = map;
+    if (!map) {
+      isMapReadyRef.current = false;
+      isMapLaidOutRef.current = false;
+      lastFitKeyRef.current = '';
+    }
+  }, []);
+
   const orderId = String(params.orderId || params.id || '').trim();
   const distance = Number(params.distance ?? 0);
   const placedAtParam = Number(params.placedAt || 0);
   const estimatedMins = getEstimatedTime(distance);
+  const insets = useSafeAreaInsets();
+  const [footerHeight, setFooterHeight] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const refreshOrderRef = useRef<(() => Promise<void>) | null>(null);
   const [order, setOrder] = useState<any | null>(null);
   const [tracking, setTracking] = useState<TrackingDoc | null>(null);
   const [loading, setLoading] = useState(true);
   const [cafeCoordinates, setCafeCoordinates] = useState<Coordinates | null>(null);
   const [routePoints, setRoutePoints] = useState<Coordinates[]>([]);
+  const [hasRoadRoute, setHasRoadRoute] = useState(false);
   const [liveEtaMins, setLiveEtaMins] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
   const [bannerLoadFailed, setBannerLoadFailed] = useState(false);
@@ -370,47 +226,46 @@ const TrackOrderScreen = () => {
       setLoading(false);
       return;
     }
-
     setLoading(true);
     const loadingTimeout = setTimeout(() => {
       setLoading(false);
     }, 1500);
-
-    // Replaces the Firestore onSnapshot live listener on the order doc with polling
-    // against the customer account's own "my orders" endpoint (see orderService.getMyOrders).
-    // There's no backend equivalent yet for the separate `order_tracking` doc (live
-    // delivery-partner GPS pings) — no delivery-rider-app/GPS-ping system exists on the
-    // new backend at all, so `tracking` just stays null; every place that reads it already
-    // falls back gracefully when it's null (see extractCafeCoordinates/
-    // extractDeliveryCoordinates above), same as it would for an order with no rider
-    // assigned yet in the original app.
-    let cancelled = false;
-    const fetchOrder = async () => {
-      try {
-        const orders = await getMyOrders();
-        if (cancelled) return;
-        const match = orders.find((o) => o.id === orderId) || null;
-        const nextFingerprint = JSON.stringify(match);
-        if (lastOrderFingerprintRef.current !== nextFingerprint) {
-          lastOrderFingerprintRef.current = nextFingerprint;
-          setOrder(match);
-        }
-      } catch (err) {
-        console.error('[UserTracking] Failed to load order:', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    fetchOrder();
-    const interval = setInterval(fetchOrder, 15000);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(loadingTimeout);
-      clearInterval(interval);
-    };
+    return () => clearTimeout(loadingTimeout);
   }, [orderId]);
+
+  // Polls the order (status/items via "my orders") and its live tracking (restaurant
+  // location, drop pin, rider + their live position — see orderService.getOrderTracking).
+  // A tracking failure never blocks the order itself from showing. Only while this screen
+  // is visible (utils/polling.ts), and not at all once the order is finished.
+  const fetchOrder = async () => {
+    try {
+      const [orders, liveTracking] = await Promise.all([
+        getMyOrders(),
+        getOrderTracking(String(orderId)).catch((trackingError) => {
+          if (!isRateLimited(trackingError)) console.warn('[UserTracking] Failed to load live tracking:', trackingError);
+          return null;
+        }),
+      ]);
+      if (liveTracking) setTracking(liveTracking);
+      setLoadError(false);
+      const match = orders.find((o) => o.id === orderId) || null;
+      const nextFingerprint = JSON.stringify(match);
+      if (lastOrderFingerprintRef.current !== nextFingerprint) {
+        lastOrderFingerprintRef.current = nextFingerprint;
+        setOrder(match);
+      }
+    } catch (err) {
+      setLoadError(true);
+      if (!isRateLimited(err)) console.error('[UserTracking] Failed to load order:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  refreshOrderRef.current = fetchOrder;
+  const orderFinished = isOrderFinished(order?.status);
+  // Rider positions arrive every few seconds from the partner app — 10s keeps the map
+  // reasonably live without hammering the API.
+  usePolling(fetchOrder, TRACKING_POLL_MS, Boolean(orderId) && !orderFinished);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -419,9 +274,8 @@ const TrackOrderScreen = () => {
     return () => clearInterval(timer);
   }, []);
 
-  const status = normalizeStatus(order?.deliveryStatus || order?.status || params.status || '');
+  const status = normalizeStatus(isOrderFinished(order?.status) ? order.status : order?.deliveryStatus || order?.status || params.status || '');
   const isPicked = isPickedStatus(status);
-  const isBeforePickup = !isPicked && !isTerminalStatus(status);
 
   useEffect(() => {
     if (isPicked) {
@@ -472,13 +326,8 @@ const TrackOrderScreen = () => {
 
   const deliveryCoordinates = useMemo(() => extractDeliveryCoordinates(order, tracking), [order, tracking]);
   const partnerCoordinates = useMemo(() => extractPartnerCoordinates(order, tracking), [order, tracking]);
-  const partnerMarkerCoordinates = useMemo(() => {
-    if (!isPicked) {
-      return partnerCoordinates;
-    }
-
-    return routePoints.length > 0 ? routePoints[0] : partnerCoordinates;
-  }, [isPicked, routePoints, partnerCoordinates]);
+  // A route may be snapped to a road or belong to an older request: never use it as GPS.
+  const partnerMarkerCoordinates = partnerCoordinates;
 
   const activeStartCoordinates = useMemo(() => {
     if (isPicked) {
@@ -488,9 +337,7 @@ const TrackOrderScreen = () => {
   }, [isPicked, partnerCoordinates, cafeCoordinates]);
 
   const mapMarkers = useMemo(() => {
-    const raw = isPicked
-      ? [activeStartCoordinates, deliveryCoordinates, cafeCoordinates]
-      : [cafeCoordinates, deliveryCoordinates];
+    const raw = [partnerCoordinates, cafeCoordinates, deliveryCoordinates];
 
     const seen = new Set<string>();
     return raw
@@ -503,22 +350,18 @@ const TrackOrderScreen = () => {
         seen.add(key);
         return true;
       });
-  }, [isPicked, activeStartCoordinates, deliveryCoordinates, cafeCoordinates]);
+  }, [partnerCoordinates, deliveryCoordinates, cafeCoordinates]);
 
   const cameraMarkers = useMemo(() => {
-    if (activeStartCoordinates && deliveryCoordinates) {
-      return [activeStartCoordinates, deliveryCoordinates];
-    }
-
     return mapMarkers;
-  }, [activeStartCoordinates, deliveryCoordinates, mapMarkers]);
+  }, [mapMarkers]);
 
   useEffect(() => {
     if (!isMapReadyRef.current || !isMapLaidOutRef.current) {
       return;
     }
 
-    const pointsForCamera = routePoints.length >= 2 ? routePoints : cameraMarkers;
+    const pointsForCamera = [...routePoints, ...cameraMarkers];
 
     if (pointsForCamera.length < 2) {
       return;
@@ -541,8 +384,6 @@ const TrackOrderScreen = () => {
       return;
     }
 
-    lastFitKeyRef.current = fitKey;
-
     const diagonalDistanceKm = getDistanceKm(
       { latitude: minLat, longitude: minLng },
       { latitude: maxLat, longitude: maxLng },
@@ -555,10 +396,9 @@ const TrackOrderScreen = () => {
         : { top: 56, right: 34, bottom: 64, left: 34 };
 
     const frame = requestAnimationFrame(() => {
-      mapRef.current?.fitToCoordinates(pointsForCamera, {
-        edgePadding,
-        animated: true,
-      });
+      if (!mapRef.current) return;
+      mapRef.current.fitToCoordinates(pointsForCamera, { edgePadding, animated: true });
+      lastFitKeyRef.current = fitKey;
     });
 
     return () => cancelAnimationFrame(frame);
@@ -581,39 +421,30 @@ const TrackOrderScreen = () => {
     );
   }, [mapMarkers, mapViewportVersion]);
 
+  const routeStartLat = activeStartCoordinates?.latitude;
+  const routeStartLng = activeStartCoordinates?.longitude;
+  const routeEndLat = deliveryCoordinates?.latitude;
+  const routeEndLng = deliveryCoordinates?.longitude;
   useEffect(() => {
-    const setPickupPath = async () => {
-      if (!deliveryCoordinates) {
-        setRoutePoints((previous) => (previous.length === 0 ? previous : []));
-        setLiveEtaMins((previous) => (previous === null ? previous : null));
-        return;
-      }
-
-      if (isPicked && activeStartCoordinates) {
-        const route = await fetchDrivingRoute(activeStartCoordinates, deliveryCoordinates);
-        setRoutePoints((previous) => (areCoordinateListsEqual(previous, route.points) ? previous : route.points));
-        if (route.durationSec > 0) {
-          const nextEta = Math.max(1, Math.ceil(route.durationSec / 60));
-          setLiveEtaMins((previous) => (previous === nextEta ? previous : nextEta));
-        } else {
-          setLiveEtaMins((previous) => (previous === null ? previous : null));
-        }
-        return;
-      }
-
-      if (isBeforePickup && cafeCoordinates) {
-        const fallbackRoute = [cafeCoordinates, deliveryCoordinates];
-        setRoutePoints((previous) => (areCoordinateListsEqual(previous, fallbackRoute) ? previous : fallbackRoute));
-        setLiveEtaMins((previous) => (previous === null ? previous : null));
-        return;
-      }
-
-      setRoutePoints((previous) => (previous.length === 0 ? previous : []));
-      setLiveEtaMins((previous) => (previous === null ? previous : null));
-    };
-
-    setPickupPath();
-  }, [isPicked, isBeforePickup, activeStartCoordinates, cafeCoordinates, deliveryCoordinates]);
+    let cancelled = false;
+    setLiveEtaMins(null);
+    setHasRoadRoute(false);
+    if (routeStartLat == null || routeStartLng == null || routeEndLat == null || routeEndLng == null || isTerminalStatus(status)) {
+      setRoutePoints([]);
+      return;
+    }
+    const start = { latitude: routeStartLat, longitude: routeStartLng };
+    const end = { latitude: routeEndLat, longitude: routeEndLng };
+    // Draw endpoints immediately. A dashed line denotes a preview, never a road route.
+    setRoutePoints([start, end]);
+    void fetchDrivingRoute(start, end).then(route => {
+      if (cancelled) return;
+      setRoutePoints(route.points);
+      setHasRoadRoute(route.distanceMeters > 0 && route.points.length > 2);
+      if (isPicked && route.durationSec > 0) setLiveEtaMins(Math.max(1, Math.ceil(route.durationSec / 60)));
+    });
+    return () => { cancelled = true; };
+  }, [routeStartLat, routeStartLng, routeEndLat, routeEndLng, isPicked, status]);
 
   const timeInfo = useMemo(() => {
     const orderPlacedAtMs = (() => {
@@ -632,31 +463,28 @@ const TrackOrderScreen = () => {
     const fallbackMinsLeft = Math.max(estimatedMins - minsPassed, 1);
     const minsLeft = isPicked && liveEtaMins !== null ? liveEtaMins + 7 : fallbackMinsLeft;
 
-    let statusText = 'Order is being prepared and packed';
-    if (status.includes('confirm')) {
-      statusText = 'Your order is confirmed and being prepared';
-    } else if (status.includes('ready')) {
-      statusText = 'Order is ready. Delivery partner will pick it up soon.';
-    } else if (isPicked) {
-      statusText = 'Delivery partner is on the way to your location.';
-    } else if (status.includes('deliver')) {
-      statusText = 'Order delivered successfully.';
-    }
+    const statusText = orderStatusMessage(status);
 
     return { minsLeft, statusText, isLiveEta: isPicked && liveEtaMins !== null };
   }, [placedAtParam, order?.createdAt, nowMs, estimatedMins, status, isPicked, liveEtaMins]);
 
-  const handleRefresh = useCallback(() => {
-    setNowMs(Date.now());
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshOrderRef.current?.();
+      setNowMs(Date.now());
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
   const handleCallDeliveryPartner = async () => {
     const phoneNumber = String(
-      order?.deliveryPartnerPhone
-      || order?.partnerPhone
-      || tracking?.customerPhone
-      || '9235949464'
-    ).trim();
+      tracking?.partner?.phone
+      || tracking?.restaurantPhone
+      || ''
+    ).replace(/[^\d+]/g, '');
+    if (!phoneNumber) return;
     const url = `tel:${phoneNumber}`;
     try {
       const supported = await Linking.canOpenURL(url);
@@ -671,42 +499,64 @@ const TrackOrderScreen = () => {
     router.push('/user/support');
   };
 
+  const stage = getOrderStage(status);
+  const terminal = stage === 'DELIVERED' || stage === 'CANCELLED';
+  const currentStep = stage === 'DELIVERED' ? 3 : isPicked ? 2 : ['ACCEPTED', 'PREPARING', 'READY', 'ASSIGNED'].includes(stage) ? 1 : 0;
+  const steps = [
+    { title: 'Order received', detail: 'Your order is with the restaurant', icon: 'receipt-outline' },
+    { title: 'Preparing your food', detail: stage === 'READY' ? 'Your food is ready for pickup' : stage === 'ASSIGNED' ? 'Delivery partner is heading to the restaurant' : 'Freshly made and packed with care', icon: 'restaurant-outline' },
+    { title: 'On the way', detail: 'Your delivery partner is heading to you', icon: 'bicycle-outline' },
+    { title: 'Delivered', detail: 'Enjoy your meal!', icon: 'checkmark-circle-outline' },
+  ] as const;
+  const contactPhone = tracking?.partner?.phone || tracking?.restaurantPhone;
+  const contactName = tracking?.partner?.name || 'Restaurant team';
+  const orderLabel = order?.displayOrderId || (orderId ? `#${orderId.slice(-6).toUpperCase()}` : '');
+  const etaTitle = stage === 'DELIVERED' ? 'Delivered' : stage === 'CANCELLED' ? 'Order cancelled' : stage === 'SCHEDULED' ? 'Scheduled' : !order ? 'Awaiting update' : `${timeInfo.minsLeft} min`;
+
   if (loading) {
     return (
-      <View style={[styles.loadingWrap, { paddingTop: insets.top + 20 }]}>
+      <View style={{ flex: 1 }}><PageHeader title="Order Status" /><View style={styles.loadingWrap}>
         <ActivityIndicator size="large" color={AppColors.primary} />
-      </View>
+      </View></View>
     );
   }
   return (
-    <View style={{ flex: 1, backgroundColor: AppColors.background }}>
-      <View style={[styles.headerWrapper, { paddingTop: insets.top }]}>
-        <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.headerBtn} onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={28} color="#282939" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Order Status</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <TouchableOpacity style={styles.headerBtn} onPress={handleRefresh}>
-              <Ionicons name="refresh" size={24} color={AppColors.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.headerBtn} onPress={handleHelp}>
-              <Ionicons name="help-circle-outline" size={26} color={AppColors.primary} />
-              <Text style={styles.helpText}>Help</Text>
-            </TouchableOpacity>
-          </View>
+    <View style={styles.page}>
+      <PageHeader title="Order Status" actions={[
+        { icon: 'refresh', label: 'Refresh order', onPress: handleRefresh, disabled: refreshing },
+        { icon: 'help-circle-outline', label: 'Order help', onPress: handleHelp },
+      ]} />
+      <ScrollView showsVerticalScrollIndicator={false}
+        removeClippedSubviews={false}
+        contentContainerStyle={[styles.content, { paddingBottom: footerHeight + 24 }]}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#f87916" colors={['#f87916']} />}>
+        <View style={styles.orderHeading}>
+          <View style={styles.row}><View style={styles.smallIcon}><Ionicons name="receipt-outline" size={17} color="#b96420" /></View><Text style={styles.orderLabel}>ORDER {orderLabel}</Text></View>
+          <Text style={styles.muted}>Tracking details</Text>
         </View>
-      </View>
-      <View style={styles.container}>
-        <Text style={styles.arrivingIn}>Arriving in</Text>
-        <Text style={styles.time}>{timeInfo.minsLeft} mins</Text>
-        {timeInfo.isLiveEta ? <Text style={styles.liveEtaTag}>Live ETA</Text> : null}
-        <Text style={styles.status}>{timeInfo.statusText}</Text>
+        <View style={styles.etaCard}>
+          <View style={styles.rowBetween}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.eyebrow}>{terminal ? 'ORDER UPDATE' : stage === 'SCHEDULED' ? 'UPCOMING ORDER' : 'ESTIMATED ARRIVAL'}</Text>
+              <Text style={[styles.time, terminal && { fontSize: 28 }]}>{etaTitle}</Text>
+            </View>
+            <View style={styles.etaIcon}><Ionicons name={stage === 'DELIVERED' ? 'checkmark-circle-outline' : stage === 'CANCELLED' ? 'close-circle-outline' : 'fast-food-outline'} size={32} color="#ec7417" /></View>
+          </View>
+          <View style={styles.etaDivider} />
+          <View style={styles.row}>
+            <View style={[styles.dot, { backgroundColor: stage === 'CANCELLED' ? '#bc4646' : '#2c9258' }]} />
+            <Text style={styles.status}>{order ? timeInfo.statusText : loadError ? 'Unable to refresh. Pull down to try again.' : 'Waiting for the latest order details.'}</Text>
+          </View>
+          {!terminal && !!order && <Text style={styles.etaNote}>{timeInfo.isLiveEta ? 'Estimate updated from your delivery route' : 'Arrival time may vary with preparation and traffic'}</Text>}
+        </View>
+        {loadError && !!order && <Text style={styles.errorNote}>Connection interrupted. Showing your last update.</Text>}
 
+        <View style={styles.card}>
+          <View style={styles.cardHeading}><Text style={styles.cardTitle}>Delivery route</Text><View style={styles.routeBadge}><Ionicons name="location-outline" size={12} color="#9a622b" /><Text style={styles.routeBadgeText}>{hasRoadRoute ? 'Road route' : 'Route preview'}</Text></View></View>
         <View style={styles.mapCard}>
           {mapMarkers.length > 0 ? (
             <MapView
-              ref={mapRef}
+              ref={attachMap}
               style={styles.map}
               provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
               onLayout={(event) => {
@@ -721,6 +571,10 @@ const TrackOrderScreen = () => {
                 lastFitKeyRef.current = '';
                 setMapViewportVersion((previous) => previous + 1);
               }}
+              onMapLoaded={() => {
+                lastFitKeyRef.current = '';
+                setMapViewportVersion(previous => previous + 1);
+              }}
               initialRegion={{
                 latitude: mapMarkers[0].latitude,
                 longitude: mapMarkers[0].longitude,
@@ -728,23 +582,12 @@ const TrackOrderScreen = () => {
                 longitudeDelta: 0.05,
               }}
             >
-              {!isPicked && cafeCoordinates ? (
+              {cafeCoordinates ? (
                 <Marker coordinate={cafeCoordinates} title="Cafe" pinColor="#ea580c" />
               ) : null}
 
-              {isPicked && partnerMarkerCoordinates ? (
-                <Marker
-                  coordinate={partnerMarkerCoordinates}
-                  title="Delivery Partner"
-                  anchor={{ x: 0.5, y: 1 }}
-                  tracksViewChanges={false}
-                >
-                  <Image
-                    source={DELIVERY_PARTNER_MARKER_IMAGE}
-                    style={styles.partnerMarkerImage}
-                    resizeMode="contain"
-                  />
-                </Marker>
+              {partnerMarkerCoordinates && !isTerminalStatus(status) ? (
+                <DeliveryPartnerMarker coordinate={partnerMarkerCoordinates} />
               ) : null}
 
               {deliveryCoordinates ? (
@@ -754,9 +597,10 @@ const TrackOrderScreen = () => {
               {routePoints.length >= 2 ? (
                 <Polyline
                   coordinates={routePoints}
-                  strokeColor={isBeforePickup ? '#9ca3af' : AppColors.primary}
+                  strokeColor={hasRoadRoute ? AppColors.primary : '#9ca3af'}
                   strokeWidth={4}
-                  lineDashPattern={isBeforePickup ? [6, 8] : undefined}
+                  lineDashPattern={hasRoadRoute ? undefined : [6, 8]}
+                  key={hasRoadRoute ? 'road-route' : 'route-preview'}
                 />
               ) : null}
             </MapView>
@@ -766,181 +610,108 @@ const TrackOrderScreen = () => {
               <Text style={styles.mapFallbackText}>Map unavailable for this order.</Text>
             </View>
           )}
+          {mapMarkers.length > 0 && <TouchableOpacity accessibilityRole="button" accessibilityLabel="Show full delivery route"
+            style={styles.recenterButton} onPress={() => { lastFitKeyRef.current = ''; setMapViewportVersion(previous => previous + 1); }}>
+            <Ionicons name="locate-outline" size={21} color="#b96420" />
+          </TouchableOpacity>}
         </View>
+          <View style={styles.mapLegend}>
+            <View style={styles.row}><View style={[styles.dot, { backgroundColor: '#ea580c' }]} /><Text style={styles.muted}>Restaurant</Text></View>
+            <View style={styles.row}><View style={[styles.dot, { backgroundColor: '#16a34a' }]} /><Text style={styles.muted}>Your address</Text></View>
+          </View>
+          {!terminal && !partnerMarkerCoordinates && <Text style={styles.mapNote}>Delivery partner location will appear when GPS updates are available.</Text>}
+          {!hasRoadRoute && routePoints.length >= 2 && <Text style={styles.mapNote}>Dashed line shows the endpoints. Road directions are temporarily unavailable.</Text>}
+        </View>
+
+        {!terminal && stage !== 'SCHEDULED' && !!order && <View style={styles.card}>
+          <View style={styles.cardHeading}><Text style={styles.cardTitle}>Your order’s journey</Text><Text style={styles.muted}>Step {currentStep + 1} of 4</Text></View>
+          <View style={styles.timeline}>
+            {steps.map((step, index) => <View key={step.title} style={styles.stepRow}>
+              <View style={styles.stepRail}>
+                <View style={[styles.stepIcon, index <= currentStep && styles.stepIconActive]}><Ionicons name={index < currentStep ? 'checkmark' : step.icon} size={18} color={index <= currentStep ? '#ed7618' : '#a6a5a5'} /></View>
+                {index < steps.length - 1 && <View style={[styles.stepLine, index < currentStep && { backgroundColor: '#f7c59e' }]} />}
+              </View>
+              <View style={styles.stepCopy}><Text style={[styles.stepTitle, index > currentStep && { color: '#969399' }]}>{step.title}</Text>{index === currentStep && <Text style={styles.stepDetail}>{step.detail}</Text>}</View>
+              {index === currentStep && <Text style={styles.nowBadge}>NOW</Text>}
+            </View>)}
+          </View>
+        </View>}
+
+        {!!order?.deliveryAddress && <View style={[styles.card, styles.addressCard]}>
+          <View style={styles.smallIcon}><Ionicons name="home-outline" size={21} color="#b96420" /></View>
+          <View style={{ flex: 1 }}><Text style={styles.cardTitle}>Delivering to</Text><Text style={styles.address}>{String(order.deliveryAddress)}</Text></View>
+        </View>}
+        <TouchableOpacity accessibilityRole="button" style={styles.helpRow} onPress={handleHelp}><Ionicons name="chatbubble-ellipses-outline" size={18} color="#8b7d72" /><Text style={styles.helpLabel}>Need help with this order?</Text><Ionicons name="chevron-forward" size={17} color="#8b7d72" /></TouchableOpacity>
+      </ScrollView>
+      <View style={[styles.floatingFooter, { paddingBottom: Math.max(insets.bottom, 10) }]}
+        onLayout={event => setFooterHeight(event.nativeEvent.layout.height)}>
+        {!terminal && <View style={[styles.card, styles.contactCard]}>
+          <View style={styles.avatar}><Ionicons name={tracking?.partner ? 'person-outline' : 'restaurant-outline'} size={24} color="#646673" /></View>
+          <View style={{ flex: 1 }}><Text style={styles.cardTitle}>{contactName}</Text><Text style={styles.stepDetail}>{tracking?.partner ? 'Your delivery partner' : 'Need an update on your order?'}</Text></View>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={contactPhone ? `Call ${contactName}` : 'Get order help'} style={styles.callButton} onPress={contactPhone ? handleCallDeliveryPartner : handleHelp}><Ionicons name={contactPhone ? 'call-outline' : 'help-circle-outline'} size={22} color="#ed7618" /></TouchableOpacity>
+        </View>}
+        {!bannerLoadFailed && !!TRACK_ORDER_BANNER_AD_UNIT_ID && <View style={styles.adBannerWrap}>
+          <Text style={styles.sponsored}>SPONSORED</Text>
+          <BannerAd unitId={TRACK_ORDER_BANNER_AD_UNIT_ID} size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+            requestOptions={{ requestNonPersonalizedAdsOnly: true }} onAdFailedToLoad={() => setBannerLoadFailed(true)} />
+        </View>}
       </View>
-        <View style={[styles.adBannerWrap, { bottom: CALL_BUTTON_SAFE_BOTTOM }]}> 
-          {!bannerLoadFailed && TRACK_ORDER_BANNER_AD_UNIT_ID ? (
-            <BannerAd
-              unitId={TRACK_ORDER_BANNER_AD_UNIT_ID}
-              size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
-              requestOptions={{
-                requestNonPersonalizedAdsOnly: true,
-              }}
-              onAdFailedToLoad={() => setBannerLoadFailed(true)}
-            />
-          ) : (
-            <View style={styles.adFallbackWrap}>
-              <Text style={styles.adFallbackText}>Ad unavailable</Text>
-            </View>
-          )}
-        </View>
-      {isPicked && (
-        <TouchableOpacity activeOpacity={0.8} style={styles.callBtn} onPress={handleCallDeliveryPartner}>
-          <Ionicons name="call-outline" size={22} color="#fff" style={{ marginRight: 8 }} />
-          <Text style={styles.callBtnText}>Call Delivery Partner</Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  headerWrapper: {
-    backgroundColor: AppColors.background,
-    paddingTop: 60,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    zIndex: 10,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-  },
-  headerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 4,
-    minWidth: 44,
-    minHeight: 44,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: AppColors.textPrimary,
-    flex: 1,
-    textAlign: 'center',
-  },
-  helpText: {
-    color: AppColors.primary,
-    fontSize: 15,
-    marginLeft: 4,
-    fontWeight: '500',
-  },
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    marginTop: 22,
-    paddingHorizontal: 14,
-  },
-  arrivingIn: {
-    fontSize: 20,
-    color: AppColors.textMuted,
-    marginBottom: 8,
-  },
-  time: {
-    fontSize: 40,
-    fontWeight: 'bold',
-    color: AppColors.primary,
-    marginBottom: 8,
-  },
-  status: {
-    fontSize: 18,
-    color: AppColors.textPrimary,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  liveEtaTag: {
-    fontSize: 12,
-    color: '#0f766e',
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  mapCard: {
-    width: '100%',
-    height: 340,
-    borderRadius: 16,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    backgroundColor: '#f8fafc',
-    marginTop: 8,
-  },
-  map: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  mapFallbackWrap: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-  },
-  mapFallbackText: {
-    color: '#6b7280',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  partnerMarkerImage: {
-    width: 64,
-    height: 64,
-  },
-  callBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: AppColors.primary,
-    paddingVertical: 16,
-    marginHorizontal: 24,
-    marginBottom: 32,
-    borderRadius: 12,
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
-    zIndex: 30,
-  },
-  adBannerWrap: {
-    position: 'absolute',
-  },
-  adFallbackWrap: {
-    width: '100%',
-    minHeight: 60,
-    backgroundColor: '#fee2e2',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    alignSelf:'center'
-  },
-  adFallbackText: {
-    color: '#991b1b',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  callBtnText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  loadingWrap: {
-    flex: 1,
-    backgroundColor: AppColors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  page: { flex: 1, backgroundColor: '#fffbf7' },
+  content: { padding: 18, gap: 16 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  orderHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  orderLabel: { color: '#71665d', fontSize: 11, fontWeight: '700', letterSpacing: 0.7 },
+  muted: { color: '#8b8490', fontSize: 11 },
+  smallIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: '#fff0df', alignItems: 'center', justifyContent: 'center' },
+  etaCard: { backgroundColor: '#fff0df', borderRadius: 22, padding: 20, borderWidth: 1, borderColor: '#f9ddbd' },
+  eyebrow: { color: '#a2602f', fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
+  time: { fontSize: 40, fontWeight: '800', color: '#282c38', marginTop: 6 },
+  etaIcon: { width: 62, height: 62, borderRadius: 22, backgroundColor: '#ffe0bb', alignItems: 'center', justifyContent: 'center' },
+  etaDivider: { height: 1, backgroundColor: '#f3d8bc', marginVertical: 16 },
+  dot: { width: 7, height: 7, borderRadius: 4 },
+  status: { flex: 1, fontSize: 13, fontWeight: '600', color: '#494039', lineHeight: 20 },
+  etaNote: { marginTop: 8, marginLeft: 15, color: '#9a7f68', fontSize: 10, lineHeight: 15 },
+  errorNote: { color: '#a74635', fontSize: 12, lineHeight: 18 },
+  card: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#eee6df', borderRadius: 18, overflow: 'hidden' },
+  cardHeading: { padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  cardTitle: { color: '#2d313c', fontSize: 14, fontWeight: '700', flexShrink: 1 },
+  routeBadge: { flexDirection: 'row', gap: 4, alignItems: 'center', padding: 6, backgroundColor: '#fff6ec', borderRadius: 7 },
+  routeBadgeText: { color: '#9a622b', fontSize: 10, fontWeight: '600' },
+  mapCard: { height: 230, marginHorizontal: 10, borderRadius: 12, overflow: 'hidden', backgroundColor: '#f5f5f5' },
+  map: { ...StyleSheet.absoluteFillObject },
+  mapFallbackWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 8 },
+  mapFallbackText: { color: '#8b8490', fontSize: 12 },
+  recenterButton: { position: 'absolute', top: 10, right: 10, width: 40, height: 40, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', elevation: 3 },
+  mapNote: { color: '#8b8490', fontSize: 10, lineHeight: 15, paddingHorizontal: 14, paddingBottom: 12 },
+  mapLegend: { flexDirection: 'row', justifyContent: 'space-between', padding: 14 },
+  partnerMarkerImage: { width: 36, height: 36 },
+  timeline: { paddingHorizontal: 16, paddingBottom: 4 },
+  stepRow: { flexDirection: 'row', gap: 12, minHeight: 56 },
+  stepRail: { alignItems: 'center', width: 34 },
+  stepIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#f4f4f5', alignItems: 'center', justifyContent: 'center' },
+  stepIconActive: { backgroundColor: '#fff0df' },
+  stepLine: { width: 2, flex: 1, minHeight: 14, backgroundColor: '#efedef', marginVertical: 3 },
+  stepCopy: { flex: 1, paddingTop: 7, paddingBottom: 14 },
+  stepTitle: { color: '#353945', fontSize: 13, fontWeight: '600' },
+  stepDetail: { fontSize: 11, lineHeight: 17, color: '#8c8790', marginTop: 4 },
+  nowBadge: { alignSelf: 'flex-start', marginTop: 8, fontSize: 9, fontWeight: '700', letterSpacing: 0.7, color: '#cf681b', backgroundColor: '#fff1e4', padding: 4, borderRadius: 4 },
+  addressCard: { flexDirection: 'row', gap: 12, padding: 16, alignItems: 'flex-start' },
+  address: { color: '#827d85', fontSize: 12, lineHeight: 19, marginTop: 5 },
+  contactCard: { marginHorizontal: 16, shadowColor: '#50301a', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: -2 }, elevation: 3, flexDirection: 'row', gap: 12, alignItems: 'center', padding: 16 },
+  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#f1f1f4', justifyContent: 'center', alignItems: 'center' },
+  callButton: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#fff0df', alignItems: 'center', justifyContent: 'center' },
+  helpRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 44 },
+  helpLabel: { color: '#8b7d72', fontSize: 12 },
+  floatingFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingTop: 12, gap: 12, backgroundColor: '#fffbf7', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#eee6df' },
+  adBannerWrap: { alignItems: 'center', gap: 6 },
+  sponsored: { color: '#aaa2a0', fontSize: 8, letterSpacing: 1.2 },
+  loadingWrap: { flex: 1, backgroundColor: '#fffbf7', justifyContent: 'center', alignItems: 'center' },
 });
 
 export default TrackOrderScreen;

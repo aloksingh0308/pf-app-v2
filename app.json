@@ -93,7 +93,10 @@
             "buildToolsVersion": "36.0.0"
           }
         }
-      ]
+      ],
+      "./plugins/withLegacyBackHandling",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth"
     ],
     "experiments": {
       "typedRoutes": true

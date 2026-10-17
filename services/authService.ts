@@ -1,4 +1,5 @@
 import { apiClient, tokenStorage } from '../utils/apiClient';
+import { CustomerLoginResponse, resolveOtpProvider } from './otp';
 
 /**
  * Replaces Firebase Auth with the restaurant-saas-platform's customer-app auth
@@ -13,6 +14,9 @@ import { apiClient, tokenStorage } from '../utils/apiClient';
  *
  * Phone+OTP is the ONLY login path — email+password login/signup/reset has been removed
  * entirely (app/signup.tsx is gone, app/login.tsx has no email tab), not just stubbed.
+ *
+ * Who sends/checks the OTP is pluggable (services/otp — MSG91 OTP Widget, or the backend's
+ * own endpoints); this file only turns the resulting login into a stored session.
  */
 
 export interface AppAuthUser {
@@ -21,14 +25,18 @@ export interface AppAuthUser {
   email: string | null;
 }
 
-interface OtpVerifyResponse {
-  token: string;
-  customer: { _id: string; name: string; phone: string; email?: string | null; walletBalance: number; loyaltyPoints: number };
+type OtpVerifyResponse = CustomerLoginResponse;
+
+export interface OtpConfirmationResult {
+  /** Digits the customer has to enter. */
+  otpLength: number;
+  confirm: (code: string) => Promise<{ user: AppAuthUser }>;
+  resend: () => Promise<void>;
 }
 
-interface OtpConfirmationResult {
-  confirm: (code: string) => Promise<{ user: AppAuthUser }>;
-}
+/** What sending an OTP led to: normally an OTP to enter; sometimes (MSG91 invisible
+ *  verification) the number is already verified and the customer is logged in. */
+export type SendOtpResult = { status: 'otp-sent'; confirmation: OtpConfirmationResult } | { status: 'logged-in'; user: AppAuthUser };
 
 function normalizePhoneToE164(phone: string): string {
   const trimmed = String(phone || '').trim();
@@ -50,22 +58,31 @@ function setCurrentUser(user: AppAuthUser | null) {
   listeners.forEach((cb) => cb(currentUser));
 }
 
-export const authService = {
-  sendPhoneOtp: async (phoneNumber: string): Promise<OtpConfirmationResult> => {
-    const e164Phone = normalizePhoneToE164(phoneNumber);
-    await apiClient.post('/public/customers/otp/send', { phone: e164Phone });
+/** Stores our JWT and publishes the logged-in user — the end of every login path. */
+async function startSession(result: OtpVerifyResponse): Promise<AppAuthUser> {
+  await tokenStorage.save(result.token);
+  const user: AppAuthUser = {
+    uid: result.customer._id,
+    phoneNumber: result.customer.phone,
+    email: result.customer.email || null,
+  };
+  setCurrentUser(user);
+  return user;
+}
 
+export const authService = {
+  sendPhoneOtp: async (phoneNumber: string): Promise<SendOtpResult> => {
+    const started = await (await resolveOtpProvider()).start(normalizePhoneToE164(phoneNumber));
+    if (started.kind === 'verified') {
+      return { status: 'logged-in', user: await startSession(started.login) };
+    }
+    const { session } = started;
     return {
-      confirm: async (code: string) => {
-        const result = await apiClient.post<OtpVerifyResponse>('/public/customers/otp/verify', { phone: e164Phone, code });
-        await tokenStorage.save(result.token);
-        const user: AppAuthUser = {
-          uid: result.customer._id,
-          phoneNumber: result.customer.phone,
-          email: result.customer.email || null,
-        };
-        setCurrentUser(user);
-        return { user };
+      status: 'otp-sent',
+      confirmation: {
+        otpLength: session.otpLength,
+        confirm: async (code: string) => ({ user: await startSession(await session.verify(code)) }),
+        resend: session.resend,
       },
     };
   },

@@ -1,17 +1,21 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppButton from '@/components/common/AppButton';
 import { AppColors } from '@/constants/appColors';
 import { AppStrings } from '@/constants/appStrings';
 import { useAppLoader } from '@/hooks/useAppLoader';
 import { computeDeliveryFee, DEFAULT_PRICING_CONFIG, getPricingConfig, PricingConfig } from '@/services/appConfigService';
-import { validateCoupon, CouponItem, fetchActiveCoupons } from '@/services/couponService';
+import { validateCoupon, CouponItem, fetchActiveCoupons, formatCouponOrderTypes, isCouponValidForOrderType, toBackendOrderType } from '@/services/couponService';
 import { OrderItem, placeOrder, toPosOrderItems } from '@/services/orderService';
 import { getReserveSlotConfigFromRestaurant, getReserveSlotsForTomorrow, placeScheduledOrder, ReserveSlot } from '@/services/scheduledOrderService';
 import { findRestaurantByAnyId, getRestaurantClosedMessage } from '@/services/restaurantService';
 import { setActiveRestaurant, consumePendingOffer } from '@/services/restaurantContext';
+import { getActiveRestaurantStatus, isRestaurantUnavailable } from '@/services/appConfigService';
+import { useAppStatus } from '@/components/AppStatusProvider';
+import RestaurantPausedBanner from '@/components/RestaurantPausedBanner';
 import Ionicons from '@react-native-vector-icons/ionicons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
@@ -22,7 +26,7 @@ import { RootState } from '../../store';
 import { setUser } from '../../store/slices/authSlice';
 import { clearCart } from '../../store/slices/cartSlice';
 import { OrderType } from '../../types/enums';
-import { calculateCartTotals } from '../../utils/dealCart';
+import { calculateCartTotals, getDealBundleQuantity, getDealUnitQuantity } from '../../utils/dealCart';
 import { moderateScale, moderateVerticalScale, scaleFont } from '../../utils/responsive';
 
 const normalizeText = (value: unknown) => String(value || '').trim().toLowerCase();
@@ -36,7 +40,8 @@ const BEVERAGE_CATEGORY_ID = '1';
 
 const CheckoutScreen = () => {
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
+  const placementInFlight = useRef(false);
+  const [placingOrder, setPlacingOrder] = useState(false);
   const dispatch = useDispatch();
   const {
     orderType,
@@ -63,6 +68,7 @@ const CheckoutScreen = () => {
   const [couponCodeInput, setCouponCodeInput] = useState('');
   const [couponsLoading, setCouponsLoading] = useState(false);
   const [isCafeOpen, setIsCafeOpen] = useState(true);
+  const restaurantUnavailable = isRestaurantUnavailable(useAppStatus().status);
   const [cafeClosedMessage, setCafeClosedMessage] = useState('');
   const [restaurantMeta, setRestaurantMeta] = useState<Record<string, unknown> | null>(null);
   const [reserveModalVisible, setReserveModalVisible] = useState(false);
@@ -85,13 +91,20 @@ const CheckoutScreen = () => {
     getPricingConfig().then(setPricingConfig);
   }, []);
 
+  // Coupons are branch-scoped (and reward coupons are tied to the one restaurant that
+  // issued them), so wait until the cart's restaurant has been resolved and set as the
+  // active restaurant below — fetching on mount raced that lookup and listed the
+  // previously-active (or default) restaurant's coupons instead.
+  const couponOrgSlug = String((restaurantMeta as any)?.orgSlug || '');
+  const couponBranchCode = String((restaurantMeta as any)?.branchCode || '');
   useEffect(() => {
+    if (!couponOrgSlug || !couponBranchCode) return;
     setCouponsLoading(true);
     fetchActiveCoupons(authUser?.uid || null)
       .then(setCoupons)
       .catch(() => setCoupons([]))
       .finally(() => setCouponsLoading(false));
-  }, [authUser?.uid]);
+  }, [authUser?.uid, couponOrgSlug, couponBranchCode]);
 
   useEffect(() => {
     const cartCafeId = String(
@@ -120,10 +133,29 @@ const CheckoutScreen = () => {
   }, [restaurantId, cartItems]);
 
 
-  const subtotal = calculateCartTotals(cartItems as any).total;
+  const { total: subtotal, savings: cartSavings } = calculateCartTotals(cartItems as any);
+  const summaryItems = useMemo(() => {
+    const seenDeals = new Set<string>();
+    return cartItems.flatMap((item, index) => {
+      const dealId = String(item.isDeal ? item.dealId || '' : '').trim();
+      if (!dealId) return [{ key: `item-${index}`, name: item.name,
+        detail: (item as any).selectedVariantName || '', quantity: item.quantity,
+        amount: Number(item.price || 0) * Math.max(1, Number(item.quantity || 1)) }];
+      if (seenDeals.has(dealId)) return [];
+      seenDeals.add(dealId);
+      const items = cartItems.filter(entry => entry.isDeal && String(entry.dealId || '').trim() === dealId);
+      const quantity = getDealBundleQuantity(items);
+      return [{ key: `deal-${dealId}`, name: item.dealName || 'Combo deal',
+        detail: items.map(entry => `${getDealUnitQuantity(entry, quantity)} × ${entry.name}${(entry as any).selectedVariantName ? ` (${(entry as any).selectedVariantName})` : ''}`).join(' · '),
+        quantity, amount: Math.max(0, Number(item.dealPrice || 0)) * quantity }];
+    });
+  }, [cartItems]);
   const hasDealItems = cartItems.some((item) => isDealCartItem(item));
 
+  // "No coupons" dishes (beverages…) come flagged from the menu; the server applies the same
+  // rule. The old Firebase beverage category id is kept for carts saved before the flag.
   const isBeverageCartItem = useCallback((item: any) => {
+    if (item?.couponExcluded === true) return true;
     const categoryId = normalizeText(item?.categoryId);
     return categoryId === BEVERAGE_CATEGORY_ID;
   }, []);
@@ -160,12 +192,19 @@ const CheckoutScreen = () => {
   const isTakeAwayOrder = orderTypeValue === OrderType.TAKE_AWAY;
   const isHomeDeliveryOrder = orderTypeValue === OrderType.HOME_DELIVERY;
   const isOffPremiseOrder = isTakeAwayOrder || isHomeDeliveryOrder;
+  // Coupons restricted to other service types are hidden from the list and rejected when
+  // typed in — the backend enforces the same rule at validate and order-placement time.
+  const backendOrderType = toBackendOrderType(orderTypeValue);
+  const orderTypeLabel = isHomeDeliveryOrder ? 'Home Delivery' : isTakeAwayOrder ? 'Take-Away' : 'Dine In';
+  const showOrderTypeMismatch = (coupon: CouponItem) => {
+    showAlert('Coupon Not Applicable', `${coupon.code} is only valid for ${formatCouponOrderTypes(coupon)} orders, not ${orderTypeLabel}.`);
+  };
 
   // Packaging applies only for take-away and home delivery
   const packagingCharge = isOffPremiseOrder ? pricingConfig.packagingCharge : 0;
 
-  // Delivery fee applies only for home delivery. Tiers come from
-  // `app_config/pricing` (falls back to DEFAULT_PRICING_CONFIG while loading).
+  // Delivery fee applies only for home delivery. Ranges are the branch's own delivery
+  // charges (Branch Settings in the SaaS panel); none set = ₹0. Who delivers never changes it.
   const deliveryFee = isHomeDeliveryOrder ? computeDeliveryFee(subtotal, pricingConfig.deliveryFeeTiers) : 0;
 
 
@@ -220,12 +259,17 @@ const CheckoutScreen = () => {
 
   const handleApplyCoupon = async (coupon: CouponItem) => {
     if (isCouponSectionDisabled) {
-      showAlert('Coupon Not Applicable', 'Coupons are not applicable when cart has only deals or beverage items.');
+      showAlert('Coupon Not Applicable', 'Your cart contains only deals or beverages, which aren’t eligible for coupons.');
       return;
     }
 
     if (couponEligibleSubtotal <= 0) {
       showAlert('Coupon Not Applicable', 'Coupons are not applicable on beverage category items.');
+      return;
+    }
+
+    if (!isCouponValidForOrderType(coupon, backendOrderType)) {
+      showOrderTypeMismatch(coupon);
       return;
     }
 
@@ -250,6 +294,7 @@ const CheckoutScreen = () => {
         code: coupon.code,
         orderSubtotal: couponEligibleSubtotal,
         items: toPosOrderItems(deriveOrderItems()),
+        orderType: backendOrderType,
       });
       setInfluencerCouponResult({ couponId: result.couponId, discountAmount: result.discountAmount, influencerCycle: coupon.influencerCycle });
       setAppliedCoupon(coupon);
@@ -280,7 +325,7 @@ const CheckoutScreen = () => {
 
   const handleApplyCouponByCode = async () => {
     if (isCouponSectionDisabled) {
-      showAlert('Coupon Not Applicable', 'Coupons are not applicable when cart has only deals or beverage items.');
+      showAlert('Coupon Not Applicable', 'Your cart contains only deals or beverages, which aren’t eligible for coupons.');
       return;
     }
 
@@ -291,17 +336,50 @@ const CheckoutScreen = () => {
     }
 
     const match = coupons.find((coupon) => String(coupon.code || '').trim().toUpperCase() === normalizedCode);
-    if (!match) {
-      showAlert('Invalid Coupon', 'This coupon code is not available or expired.');
+    if (match) {
+      await handleApplyCoupon(match);
       return;
     }
 
-    await handleApplyCoupon(match);
+    // Not in the listed coupons (e.g. a reward/scratch-card code, or a list that loaded
+    // before the latest reward was issued) — let the server decide instead of rejecting
+    // it locally. The backend is the source of truth for eligibility and the discount.
+    setIsApplyingCoupon(true);
+    try {
+      const result = await validateCoupon({
+        code: normalizedCode,
+        orderSubtotal: couponEligibleSubtotal,
+        items: toPosOrderItems(deriveOrderItems()),
+        orderType: backendOrderType,
+      });
+      const refreshed = await fetchActiveCoupons(authUser?.uid || null).catch(() => [] as CouponItem[]);
+      setCoupons(refreshed);
+      const listed = refreshed.find((coupon) => coupon.id === result.couponId);
+      const applied: CouponItem = listed || {
+        id: result.couponId,
+        code: normalizedCode,
+        type: result.freeItemMenuItemId ? 'Freebie' : 'Flat',
+        value: result.discountAmount,
+        maxDiscount: 0,
+        minOrder: 0,
+        expiry: null,
+        isActive: true,
+        applicableOrderTypes: [],
+      };
+      setInfluencerCouponResult({ couponId: result.couponId, discountAmount: result.discountAmount, influencerCycle: applied.influencerCycle });
+      setAppliedCoupon(applied);
+      setCouponCodeInput(applied.code);
+      setCouponModalVisible(false);
+    } catch (error: any) {
+      showAlert('Coupon Not Applicable', error?.message || 'This coupon code is not available or expired.');
+    } finally {
+      setIsApplyingCoupon(false);
+    }
   };
 
   const handleOpenCouponModal = () => {
     if (isCouponSectionDisabled) {
-      showAlert('Coupon Not Applicable', 'Coupons are not applicable when cart has only deals or beverage items.');
+      showAlert('Coupon Not Applicable', 'Your cart contains only deals or beverages, which aren’t eligible for coupons.');
       return;
     }
 
@@ -316,7 +394,9 @@ const CheckoutScreen = () => {
 
   const visibleCoupons = coupons.filter(
     (coupon) => String(coupon.createdFrom || '').trim().toUpperCase() !== 'SCRATCH_CARD'
+      && isCouponValidForOrderType(coupon, backendOrderType)
   );
+  const hiddenByOrderTypeCount = coupons.filter((coupon) => !isCouponValidForOrderType(coupon, backendOrderType)).length;
 
   const reserveSelectedSlot = useMemo(() => {
     if (selectedReserveSlotIndex == null) return null;
@@ -406,12 +486,25 @@ const CheckoutScreen = () => {
   }, [getCartCafeId, restaurantMeta]);
 
   const handlePlaceOrder = async () => {
+    if (placementInFlight.current) return;
+    placementInFlight.current = true;
+    setPlacingOrder(true);
+    let placed = false;
     try {
       const cartCafeId = getCartCafeId();
 
       if (cartCafeId) {
         const restaurantRecord = await findRestaurantByAnyId(cartCafeId);
         setActiveRestaurant(restaurantRecord);
+        // Paused/closed by the restaurant itself — nothing to schedule, it can't take orders.
+        const live = await getActiveRestaurantStatus();
+        if (isRestaurantUnavailable(live.status)) {
+          showAlert(
+            "Restaurant isn't taking orders",
+            `${live.description ? `${live.description}. ` : ''}Please try again later or order from another restaurant.`
+          );
+          return;
+        }
         const closedMessage = getRestaurantClosedMessage(String(restaurantRecord?.openingHours || ''));
         if (closedMessage) {
           setIsCafeOpen(false);
@@ -499,6 +592,8 @@ const CheckoutScreen = () => {
         String(restaurantMeta?.name || (cartItems[0] as any)?.restaurantName || '').trim() || null,
       );
 
+      placed = true;
+
       // No post-order "mark coupon used"/"spend wallet"/"spend coins" step needed anymore —
       // the backend consumes the coupon and debits wallet/coins itself, transactionally,
       // inside order placement (see coupon.service.ts's consumeCoupon and
@@ -527,6 +622,11 @@ const CheckoutScreen = () => {
       hideGlobalLoader();
       console.error('Error placing order:', error);
       showErrorAlert(error, 'Failed to place order. Please try again.', 'Error');
+    } finally {
+      // Keep the guard locked after success until checkout unmounts.
+      if (!placed) placementInFlight.current = false;
+      setPlacingOrder(false);
+      hideGlobalLoader();
     }
   };
 
@@ -666,57 +766,48 @@ const CheckoutScreen = () => {
 
   return (
     <Container>
-      <View>
-      <HeaderContainer>
-        <BackButton onPress={() => navigation.goBack()}>
-          <Ionicons name="chevron-back" size={moderateScale(24)} color="#282939" />
-        </BackButton>
-        <Title>{'Checkout'}</Title>
-      </HeaderContainer>
-      </View>
+      <PageHeader title="Checkout" />
 
-      <ScrollContainer>
+      <ScrollContainer keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 24 }}>
+        <CheckoutIntro>One last look before we get cooking.</CheckoutIntro>
         <Summary>
-          {cartItems.map((item, index) => (
-            <SummaryRow key={`${String(item.firebaseId || item.id)}::${String((item as any).selectedVariantId || '')}::${index}`}>
-              <SummaryText>{item.name}{(item as any).selectedVariantName ? ` (${(item as any).selectedVariantName})` : ''} x {item.quantity}</SummaryText>
-              <SummaryText>₹{(item.price * item.quantity).toFixed(2)}</SummaryText>
+          <CardHeading><Ionicons name="receipt-outline" size={20} color="#ee7513" /><CardTitle>Order summary</CardTitle></CardHeading>
+          {summaryItems.map(item => (
+            <SummaryRow key={item.key} style={{ alignItems: 'flex-start' }}>
+              <QuantityBadge>{item.quantity}×</QuantityBadge>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <ItemName>{item.name}</ItemName>
+                {!!item.detail && <ItemDetail>{item.detail}</ItemDetail>}
+              </View>
+              <ItemAmount>₹{item.amount.toFixed(2)}</ItemAmount>
             </SummaryRow>
           ))}
+          {cartSavings > 0 && <SavingsNote>You’re saving ₹{cartSavings.toFixed(2)} on your items</SavingsNote>}
           <Divider />
-
           <SummaryRow>
-            <SubtotalLabel>Sub total</SubtotalLabel>
+            <SubtotalLabel>Item subtotal</SubtotalLabel>
             <SubtotalValue>₹{subtotal.toFixed(2)}</SubtotalValue>
           </SummaryRow>
-
-          <SummaryRow>
-            <DiscountLabel>
-              {isCouponSectionDisabled
-                ? 'Discount (coupon not applicable on deals/beverages only cart)'
-                : hasBeverageItems
-                  ? 'Discount (deals/beverages excluded from coupon)'
-                  : 'Discount (coupon applied)'}
-            </DiscountLabel>
-            {appliedCoupon?.type === 'Freebie' && !isCouponSectionDisabled
-              ? <DiscountValue>FREE</DiscountValue>
-              : <DiscountValue>-₹{discountAmount.toFixed(2)}</DiscountValue>}
-          </SummaryRow>
-
-          <SummaryRow>
-            <WalletLabel>Wallet Used</WalletLabel>
-            <WalletValue>-₹{walletUsed.toFixed(2)}</WalletValue>
-          </SummaryRow>
-
-          <SummaryRow>
+          {appliedCoupon && !isCouponSectionDisabled && (
+            <SummaryRow>
+              <DiscountLabel>Coupon discount</DiscountLabel>
+              <DiscountValue>{appliedCoupon.type === 'Freebie' ? 'FREE' : `−₹${discountAmount.toFixed(2)}`}</DiscountValue>
+            </SummaryRow>
+          )}
+          {walletUsed > 0 && <SummaryRow>
+            <WalletLabel>Wallet used</WalletLabel>
+            <WalletValue>−₹{walletUsed.toFixed(2)}</WalletValue>
+          </SummaryRow>}
+          {packagingCharge > 0 && <SummaryRow>
             <ChargeLabel>Packaging charges</ChargeLabel>
             <ChargeValue>₹{packagingCharge.toFixed(2)}</ChargeValue>
-          </SummaryRow>
+          </SummaryRow>}
 
           {isHomeDeliveryOrder ? (
             <SummaryRow>
               <ChargeLabel>Delivery Fee</ChargeLabel>
-              <ChargeValue>{deliveryFee > 0 ? `₹${deliveryFee.toFixed(2)}` : 'FREE'}</ChargeValue>
+              <ChargeValue>₹{deliveryFee.toFixed(2)}</ChargeValue>
             </SummaryRow>
           ) : null}
 
@@ -742,36 +833,38 @@ const CheckoutScreen = () => {
           {/* --- End Reward Coin System UI --- */}
 
           <SummaryRow>
-            <TotalLabel>Total</TotalLabel>
+            <TotalLabel>To pay</TotalLabel>
             <TotalValue>₹{total.toFixed(2)}</TotalValue>
           </SummaryRow>
         </Summary>
 
         <CouponSection>
-          <CouponLabel>{AppStrings.checkout.applyCoupon}</CouponLabel>
+          <CardHeading><Ionicons name="pricetag-outline" size={20} color="#ee7513" /><CardTitle>Offers & coupons</CardTitle></CardHeading>
           {isCouponSectionDisabled ? (
-            <CouponStatusText>Coupons are not applicable when cart has only deals or beverage items.</CouponStatusText>
+            <CouponStatusText>Your cart contains only deals or beverages, which aren’t eligible for coupons.</CouponStatusText>
           ) : null}
           {!isCouponSectionDisabled && (hasDealItems || hasBeverageItems) ? (
-            <CouponStatusText>Coupon discount applies only to other eligible items (excluding deals and beverages).</CouponStatusText>
+            <CouponStatusText>Coupons apply to eligible items only. Deals and beverages are excluded.</CouponStatusText>
           ) : null}
           {appliedCoupon ? (
             <CouponAppliedText>
-              ✅ {appliedCoupon.code} — {appliedCoupon.type === 'Percentage'
+              ✅ {appliedCoupon.code} — {appliedCoupon.dealHeadline
+                ? appliedCoupon.dealHeadline
+                : appliedCoupon.type === 'Percentage'
                 ? `${appliedCoupon.value}% OFF`
                 : appliedCoupon.type === 'Flat'
                   ? `₹${appliedCoupon.value} OFF`
                   : `${freebieName} FREE`}
             </CouponAppliedText>
-          ) : (
-            <CouponStatusText>{AppStrings.checkout.noCouponApplied}</CouponStatusText>
-          )}
+          ) : null}
 
           <CouponContainer>
             <CouponInput
               value={couponCodeInput}
               onChangeText={setCouponCodeInput}
-              placeholder="Paste coupon code"
+              placeholder="Enter coupon code"
+              accessibilityLabel="Coupon code"
+              placeholderTextColor="#969397"
               autoCapitalize="characters"
               autoCorrect={false}
               editable={!appliedCoupon && !isCouponSectionDisabled}
@@ -792,7 +885,7 @@ const CheckoutScreen = () => {
           </CouponContainer>
 
           <ViewAllCouponsButton onPress={handleOpenCouponModal} disabled={isCouponSectionDisabled}>
-            <ViewAllCouponsText>View all coupons</ViewAllCouponsText>
+            <ViewAllCouponsText>Browse available coupons</ViewAllCouponsText><Ionicons name="chevron-forward" size={16} color="#ee7513" />
           </ViewAllCouponsButton>
 
         </CouponSection>
@@ -819,7 +912,9 @@ const CheckoutScreen = () => {
                 <ActivityIndicator color={AppColors.primary} />
               </CouponLoadingWrap>
             ) : visibleCoupons.length === 0 ? (
-              <CouponEmptyText>No coupons available right now.</CouponEmptyText>
+              <CouponEmptyText>
+                {hiddenByOrderTypeCount > 0 ? `No coupons available for ${orderTypeLabel} orders right now.` : 'No coupons available right now.'}
+              </CouponEmptyText>
             ) : (
               <ScrollView showsVerticalScrollIndicator={false}>
                 {visibleCoupons.map(coupon => {
@@ -834,7 +929,9 @@ const CheckoutScreen = () => {
                       <CouponCardLeft>
                         <CouponCode>{coupon.code}</CouponCode>
                         <CouponDesc>
-                          {coupon.type === 'Percentage'
+                          {coupon.dealHeadline
+                            ? coupon.dealHeadline
+                            : coupon.type === 'Percentage'
                             ? `${coupon.value}% off${coupon.maxDiscount > 0 ? ` up to ₹${coupon.maxDiscount}` : ''}`
                             : coupon.type === 'Flat'
                               ? `₹${coupon.value} flat off`
@@ -982,6 +1079,7 @@ const CheckoutScreen = () => {
           </PaymentInfoText>
         </PaymentInfoBox>
       )}
+      <RestaurantPausedBanner />
       {!isCafeOpen && (
         <View>
         <CafeClosedBanner>
@@ -991,9 +1089,10 @@ const CheckoutScreen = () => {
       )}
       <View>
       <AppButton
-        title={isCafeOpen ? AppStrings.common.placeOrder : 'Schedule Order'}
+        title={restaurantUnavailable ? 'Not taking orders' : isCafeOpen ? AppStrings.common.placeOrder : 'Schedule Order'}
         onPress={handlePlaceOrder}
-        disabled={false}
+        disabled={restaurantUnavailable || placingOrder}
+        loading={placingOrder}
         style={{
           width: '90%',
           alignSelf: 'center',
@@ -1045,45 +1144,24 @@ const PaymentInfoText = styled.Text`
 
 export default CheckoutScreen;
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
-  background-color: ${AppColors.background};
+  background-color: #fffbf7;
 `;
 
-const HeaderContainer = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding: ${moderateScale(10)}px;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.lightBorder};
-  padding-top: ${moderateVerticalScale(30)}px;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: ${moderateScale(40)}px;
-  height: ${moderateVerticalScale(40)}px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const Title = styled.Text`
-  font-size: ${scaleFont(20)}px;
-  font-weight: bold;
-  padding: 0 ${moderateScale(20)}px;
-  width: 70%;
-  text-align: center;
-`;
 
 const ScrollContainer = styled.ScrollView`
   flex: 1;
 `;
 
 const Summary = styled.View`
-  background-color: ${AppColors.lightBackground};
+  background-color: #fff;
   border-radius: ${moderateScale(12)}px;
   padding: ${moderateScale(16)}px;
-  margin: ${moderateScale(20)}px;
-  border: 1px solid ${AppColors.lightBorder};
+  margin: 0 ${moderateScale(18)}px ${moderateScale(16)}px;
+  border: 1px solid #eee5dc;
 `;
 
 const SummaryRow = styled.View`
@@ -1093,10 +1171,6 @@ const SummaryRow = styled.View`
   align-items: center;
 `;
 
-const SummaryText = styled.Text`
-  font-size: ${scaleFont(14)}px;
-  color: #333;
-`;
 
 const SubtotalLabel = styled.Text`
   font-size: ${scaleFont(15)}px;
@@ -1148,7 +1222,7 @@ const ChargeValue = styled.Text`
 
 const Divider = styled.View`
   height: ${moderateVerticalScale(1)}px;
-  background-color: #ddd;
+  background-color: #eee7e0;
   margin: ${moderateVerticalScale(12)}px 0;
 `;
 
@@ -1165,19 +1239,13 @@ const TotalValue = styled.Text`
 `;
 
 const CouponSection = styled.View`
-  margin: ${moderateScale(20)}px;
+  margin: 0 ${moderateScale(18)}px;
   padding: ${moderateScale(16)}px;
-  background-color: #fff3e0;
+  background-color: #fff;
   border-radius: ${moderateScale(12)}px;
-  border: 1px solid #ffe0b2;
+  border: 1px solid #eee5dc;
 `;
 
-const CouponLabel = styled.Text`
-  font-size: ${scaleFont(16)}px;
-  font-weight: 600;
-  color: ${AppColors.textDark};
-  margin-bottom: ${moderateVerticalScale(12)}px;
-`;
 
 const CouponContainer = styled.View`
   flex-direction: row;
@@ -1187,12 +1255,12 @@ const CouponContainer = styled.View`
 
 const CouponInput = styled.TextInput<{ $disabledInput?: boolean }>`
   flex: 1;
-  border: 1px solid ${AppColors.primary};
-  border-radius: ${moderateScale(8)}px;
+  border: 1px solid #e8ded4;
+  border-radius: ${moderateScale(10)}px;
   padding: ${moderateScale(12)}px;
   font-size: ${scaleFont(14)}px;
-  background-color: ${(props) => (props.$disabledInput ? '#f3f4f6' : AppColors.background)};
-  color: ${(props) => (props.$disabledInput ? '#6b7280' : AppColors.textDark)};
+  background-color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? '#f3f4f6' : AppColors.background)};
+  color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? '#6b7280' : AppColors.textDark)};
 `;
 
 const ApplyCouponButton = styled.TouchableOpacity`
@@ -1216,7 +1284,8 @@ const InlineRemoveText = styled.Text`
 `;
 
 const CouponStatusText = styled.Text`
-  font-size: ${scaleFont(14)}px;
+  font-size: ${scaleFont(12)}px;
+  line-height: ${scaleFont(18)}px;
   color: #666;
   margin-bottom: ${moderateVerticalScale(10)}px;
 `;
@@ -1234,15 +1303,13 @@ const ApplyCouponText = styled.Text`
   font-size: ${scaleFont(14)}px;
 `;
 
-const CouponHint = styled.Text`
-  font-size: ${scaleFont(12)}px;
-  color: #666;
-  margin-top: ${moderateVerticalScale(10)}px;
-  font-style: italic;
-`;
 
 const ViewAllCouponsButton = styled.TouchableOpacity`
-  align-self: flex-start;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  opacity: ${(props: any) => props.disabled ? 0.45 : 1};
   margin-top: ${moderateVerticalScale(10)}px;
   padding: ${moderateVerticalScale(8)}px ${moderateScale(2)}px;
 `;
@@ -1463,8 +1530,8 @@ const ReserveSlotsScroll = styled.ScrollView`
 
 const ReserveSlotCard = styled.TouchableOpacity<{ $selected: boolean; $disabled: boolean }>`
   border-width: 1px;
-  border-color: ${({ $selected, $disabled }) => ($disabled ? '#e5e7eb' : $selected ? '#f68712' : '#e5e7eb')};
-  background-color: ${({ $selected, $disabled }) => ($disabled ? '#f9fafb' : $selected ? '#fff7ed' : '#fff')};
+  border-color: ${({ $selected, $disabled }: { $selected: boolean; $disabled: boolean }) => ($disabled ? '#e5e7eb' : $selected ? '#f68712' : '#e5e7eb')};
+  background-color: ${({ $selected, $disabled }: { $selected: boolean; $disabled: boolean }) => ($disabled ? '#f9fafb' : $selected ? '#fff7ed' : '#fff')};
   border-radius: ${moderateScale(12)}px;
   padding: ${moderateScale(12)}px;
   margin-bottom: ${moderateVerticalScale(10)}px;
@@ -1482,11 +1549,11 @@ const ReserveSlotTime = styled.Text`
 const ReserveSlotBadge = styled.View<{ $status: 'available' | 'limited' | 'full' }>`
   padding: ${moderateVerticalScale(5)}px ${moderateScale(8)}px;
   border-radius: 999px;
-  background-color: ${({ $status }) => ($status === 'full' ? '#fee2e2' : $status === 'limited' ? '#ffedd5' : '#dcfce7')};
+  background-color: ${({ $status }: { $status: 'available' | 'limited' | 'full' }) => ($status === 'full' ? '#fee2e2' : $status === 'limited' ? '#ffedd5' : '#dcfce7')};
 `;
 
 const ReserveSlotBadgeText = styled.Text<{ $status: 'available' | 'limited' | 'full' }>`
-  color: ${({ $status }) => ($status === 'full' ? '#b91c1c' : $status === 'limited' ? '#c2410c' : '#15803d')};
+  color: ${({ $status }: { $status: 'available' | 'limited' | 'full' }) => ($status === 'full' ? '#b91c1c' : $status === 'limited' ? '#c2410c' : '#15803d')};
   font-size: ${scaleFont(11)}px;
   font-weight: 800;
 `;
@@ -1517,4 +1584,56 @@ const ReserveSummaryValue = styled.Text`
   color: #111827;
   font-size: ${scaleFont(13)}px;
   font-weight: 700;
+`;
+
+const CheckoutIntro = styled.Text`
+  color: #85818a;
+  font-size: ${scaleFont(13)}px;
+  margin: ${moderateScale(18)}px;
+`;
+const CardHeading = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+`;
+const CardTitle = styled.Text`
+  flex: 1;
+  font-size: ${scaleFont(16)}px;
+  font-weight: 700;
+  color: #252a36;
+`;
+const QuantityBadge = styled.Text`
+  overflow: hidden;
+  background-color: #fff3e6;
+  color: #b75b12;
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin-right: 10px;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 700;
+`;
+const ItemName = styled.Text`
+  color: #303440;
+  font-size: ${scaleFont(14)}px;
+  font-weight: 600;
+`;
+const ItemDetail = styled.Text`
+  color: #85818a;
+  font-size: ${scaleFont(11)}px;
+  line-height: ${scaleFont(17)}px;
+  margin-top: 4px;
+`;
+const ItemAmount = styled.Text`
+  color: #303440;
+  font-size: ${scaleFont(14)}px;
+  font-weight: 600;
+`;
+const SavingsNote = styled.Text`
+  color: #25854c;
+  background-color: #edf8ef;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 600;
 `;

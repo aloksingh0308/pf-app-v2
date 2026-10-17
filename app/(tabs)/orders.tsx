@@ -1,23 +1,29 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import AppImage from '@/components/AppImage';
+import CancelOrderButton from '@/components/CancelOrderButton';
 import { getMenuItems } from '@/services/menuService';
 import { findRestaurantByAnyId } from '@/services/restaurantService';
 import { userService } from '@/services/userService';
-import { getMyOrders, submitOrderReview as submitOrderReviewApi, uploadReviewImage } from '@/services/orderService';
+import { getMyOrdersPage, OrderRestaurantSummary, submitOrderReview as submitOrderReviewApi, uploadReviewImage } from '@/services/orderService';
 import { setCartItems, setEditingOrderMeta } from '@/store/slices/cartSlice';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as ImagePicker from 'expo-image-picker';
-import * as Print from 'expo-print';
-import { router, useNavigation } from 'expo-router';
-import * as Sharing from 'expo-sharing';
+import { router } from 'expo-router';
+import { shareInvoicePdf } from '@/utils/invoice';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Linking, Modal } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../services/alertService';
 import { RootState } from '../../store';
 import { OrderType } from '../../types/enums';
+import { isOrderActive, isOrderCancelled, isOrderDelivered, orderStatusColors, orderStatusLabel } from '@/utils/orderStatus';
 import { buildCartItemFromProduct, getSelectedProductVariant } from '@/utils/productVariants';
+import { usePolling } from '@/utils/polling';
+import { isRateLimited } from '@/utils/apiClient';
+
+const ORDERS_POLL_MS = 30_000;
 
 // Haversine formula to calculate distance in km between two lat/lng points
 function getDistanceInKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -32,6 +38,26 @@ function getDistanceInKm(lat1: number, lon1: number, lat2: number, lon2: number)
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+}
+
+const ORDER_TYPE_META: Record<string, { label: string; icon: string }> = {
+  [OrderType.DINE_IN]: { label: 'Dine In', icon: 'restaurant-outline' },
+  [OrderType.TAKE_AWAY]: { label: 'Takeaway', icon: 'bag-handle-outline' },
+  [OrderType.HOME_DELIVERY]: { label: 'Delivery', icon: 'bicycle-outline' },
+};
+
+const MAX_VISIBLE_ITEMS = 3;
+
+function formatOrderDate(value: unknown) {
+  const date = new Date((value as any)?.toDate?.() || (value as any));
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+/** App order-type code ('1' dine-in, '2' takeaway, '3' delivery) → status-label flavour. */
+function orderKind(orderType: unknown): 'delivery' | 'takeaway' | 'dinein' {
+  const value = String(orderType || '');
+  return value === OrderType.TAKE_AWAY ? 'takeaway' : value === OrderType.DINE_IN ? 'dinein' : 'delivery';
 }
 
 function formatScheduledDateKey(dateKey: unknown) {
@@ -52,19 +78,32 @@ function formatScheduledDateKey(dateKey: unknown) {
 
 const OrderHistoryScreen = () => {
   const CAFE_PHONE_NUMBER = '8957246131';
-  const insets = useSafeAreaInsets();
   const user = useSelector((state: RootState) => state.auth.user);
   const dispatch = useDispatch();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Order history is paged (newest first): the first page is polled for status changes,
+  // older pages load as the list is scrolled to the end.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
+  const pagesLoadedRef = useRef(1);
   const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
   const [reviewOrder, setReviewOrder] = useState<any | null>(null);
   const [itemRatings, setItemRatings] = useState<Record<string, number>>({});
   const [reviewComment, setReviewComment] = useState('');
   const [reviewImageUri, setReviewImageUri] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
-  const navigation = useNavigation();
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  // Price breakdowns start collapsed — the card shows just the total; tap to expand.
+  const [expandedBills, setExpandedBills] = useState<Set<string>>(() => new Set());
+  const toggleBill = (orderId: string) =>
+    setExpandedBills((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderId)) next.delete(orderId);
+      else next.add(orderId);
+      return next;
+    });
   const lastOrdersFingerprintRef = useRef('');
   const lastReferralRunKeyRef = useRef('');
 
@@ -138,18 +177,13 @@ const OrderHistoryScreen = () => {
 
 
   const isEditableAppOrder = (order: any) => {
-    const status = String(order?.status || '').toLowerCase();
     const source = String(order?.source || '').toLowerCase();
     const orderType = String(order?.orderType || '').toLowerCase();
     // Disallow editing for Home delivery orders
     if (orderType === "3" || orderType === 'delivery') {
       return false;
     }
-    return source === 'app'
-      && !status.includes('deliver')
-      && !status.includes('complete')
-      && !status.includes('cancel')
-      && !status.includes('reject');
+    return source === 'app' && isOrderActive(order?.status);
   };
 
   const handleEditOrder = async (order: any) => {
@@ -352,8 +386,7 @@ const OrderHistoryScreen = () => {
         imageUrl: imageUrl || null,
       });
 
-      const refreshedOrders = await getMyOrders();
-      setOrders(refreshedOrders);
+      await refreshFirstPage();
 
       closeReviewModal();
       showAlert('Thank You', 'Your review has been submitted successfully.');
@@ -363,117 +396,64 @@ const OrderHistoryScreen = () => {
     }
   };
 
-  const handleDownloadInvoice = async (order: any) => {
+  const ordersRef = useRef<any[]>([]);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
+  /** Swaps in a freshly-fetched first page while keeping any older pages already loaded
+   *  (anything older than the first page's last order). */
+  const mergeFirstPage = (firstPage: any[], current: any[]) => {
+    const last = firstPage[firstPage.length - 1];
+    if (!last || pagesLoadedRef.current <= 1) return firstPage;
+    const cutoff = getCreatedTime(last.createdAt);
+    const firstIds = new Set(firstPage.map((order) => String(order.id)));
+    return [...firstPage, ...current.filter((order) => !firstIds.has(String(order.id)) && getCreatedTime(order.createdAt) < cutoff)];
+  };
+
+  const refreshFirstPage = async () => {
+    const firstPage = await getMyOrdersPage();
+    setOrders((current) => mergeFirstPage(firstPage.orders, current));
+    if (pagesLoadedRef.current <= 1) setNextCursor(firstPage.nextCursor);
+  };
+
+  const loadMoreOrders = async () => {
+    if (!nextCursor || loadingMore || loading) return;
+    setLoadingMore(true);
+    setLoadMoreFailed(false);
     try {
-      if (formatStatus(order?.status || '') !== 'Delivered') {
-        showAlert('Invoice Not Available', 'Invoice can be downloaded only for delivered orders.');
-        return;
-      }
+      const page = await getMyOrdersPage(nextCursor);
+      setOrders((current) => {
+        const seen = new Set(current.map((order) => String(order.id)));
+        return [...current, ...page.orders.filter((order) => !seen.has(String(order.id)))];
+      });
+      pagesLoadedRef.current += 1;
+      setNextCursor(page.nextCursor);
+    } catch (error) {
+      console.error('Failed to load more orders:', error);
+      setLoadMoreFailed(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
-      const visibleOrderId = String(order.displayOrderId || `#${order.id || 'N/A'}`);
-
-      setDownloadingInvoiceId(order.id);
-
-      const orderDate = new Date(order.createdAt?.toDate?.() || order.createdAt);
-      const orderItems = Array.isArray(order.items) ? order.items : [];
-      const subtotal = orderItems.reduce((sum: number, item: any) => {
-        const quantity = Number(item.quantity || 0);
-        const price = Number(item.price || 0);
-        return sum + (quantity * price);
-      }, 0);
-
-      const discount = Number(order?.pricing?.discount || 0);
-      const packagingCharge = Number(order?.pricing?.packagingCharge || 0);
-      const deliveryFee = Number(order?.pricing?.deliveryFee || 0);
-      const walletUsed = Number(order?.pricing?.walletUsed || 0);
-      const total = Number(order?.total || Math.max(0, subtotal - discount + packagingCharge + deliveryFee - walletUsed));
-
-      const itemsRows = orderItems.map((item: any) => {
-        const quantity = Number(item.quantity || 0);
-        const price = Number(item.price || 0);
-        const lineTotal = quantity * price;
-        return `
-                  <tr>
-                    <td>${escapeHtml(String(item.name || 'Item'))}</td>
-                    <td style="text-align:center;">${quantity}</td>
-                    <td style="text-align:right;">₹${price.toFixed(2)}</td>
-                    <td style="text-align:right;">₹${lineTotal.toFixed(2)}</td>
-                  </tr>
-                `;
-      }).join('');
-
-      const invoiceHtml = `
-              <html>
-                <head>
-                  <meta charset="utf-8" />
-                  <style>
-                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; padding: 24px; color: #222; }
-                    h1 { margin: 0 0 8px 0; font-size: 24px; }
-                    .muted { color: #666; font-size: 12px; }
-                    .section { margin-top: 16px; }
-                    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                    th, td { border: 1px solid #e5e5e5; padding: 10px; font-size: 13px; }
-                    th { background: #f7f7f7; text-align: left; }
-                    .totals { margin-top: 16px; width: 280px; margin-left: auto; }
-                    .totals div { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
-                    .total { font-weight: 700; font-size: 16px; }
-                    .footer { margin-top: 28px; font-size: 11px; color: #666; }
-                  </style>
-                </head>
-                <body>
-                  <h1>Invoice</h1>
-                  <div class="muted">Hungry's Bucket Cafe</div>
-                  <div class="section">
-                    <div><strong>Invoice No:</strong> ${escapeHtml(visibleOrderId)}</div>
-                    <div><strong>Order Date:</strong> ${escapeHtml(orderDate.toLocaleString())}</div>
-                    <div><strong>Status:</strong> ${escapeHtml(formatStatus(order.status || 'Pending'))}</div>
-                    <div><strong>Customer:</strong> ${escapeHtml(user?.name || 'Customer')}</div>
-                    <div><strong>Email:</strong> ${escapeHtml(user?.email || order.email || '-')}</div>
-                    <div><strong>Phone:</strong> ${escapeHtml(user?.phoneNumber || order.mobileNumber || '-')}</div>
-                  </div>
-
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Item</th>
-                        <th style="text-align:center;">Qty</th>
-                        <th style="text-align:right;">Price</th>
-                        <th style="text-align:right;">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${itemsRows || '<tr><td colspan="4">No items</td></tr>'}
-                    </tbody>
-                  </table>
-
-                  <div class="totals">
-                    <div><span>Subtotal</span><span>₹${subtotal.toFixed(2)}</span></div>
-                    <div><span>Discount</span><span>-₹${discount.toFixed(2)}</span></div>
-                    <div><span>Packaging & Other Charges</span><span>₹${packagingCharge.toFixed(2)}</span></div>
-                    <div><span>Delivery Fee</span><span>₹${deliveryFee.toFixed(2)}</span></div>
-                    ${walletUsed > 0 ? `<div><span>Wallet Used</span><span>-₹${walletUsed.toFixed(2)}</span></div>` : ''}
-                    <div class="total"><span>Total</span><span>₹${total.toFixed(2)}</span></div>
-                  </div>
-
-                  <div class="footer">
-                    Generated by Hungry's Bucket Cafe app. For help, contact support.
-                  </div>
-                </body>
-              </html>
-            `;
-
-      const { uri } = await Print.printToFileAsync({ html: invoiceHtml });
-      const canShare = await Sharing.isAvailableAsync();
-
-      if (canShare) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `Invoice_${visibleOrderId.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`,
-          UTI: 'com.adobe.pdf',
-        });
-      } else {
-        showAlert('Invoice Ready', `Invoice has been created at:\n${uri}`);
-      }
+  const handleDownloadInvoice = async (order: any) => {
+    if (!isOrderDelivered(order?.status)) {
+      showAlert('Invoice Not Available', 'The invoice is available once your order is delivered or completed.');
+      return;
+    }
+    setDownloadingInvoiceId(order.id);
+    try {
+      const kind = orderKind(order.orderType);
+      const result = await shareInvoicePdf(
+        {
+          ...order,
+          statusLabel: orderStatusLabel(order.status, kind),
+          orderTypeLabel: kind === 'delivery' ? 'Home Delivery' : kind === 'takeaway' ? 'Takeaway' : 'Dine In',
+        },
+        { name: user?.name || order.customerName, email: user?.email || order.email, phone: user?.phoneNumber || order.mobileNumber }
+      );
+      if (!result.shared) showAlert('Invoice Ready', `Your invoice has been saved to:\n${result.uri}`);
     } catch (error) {
       console.error('Failed to generate invoice:', error);
       showErrorAlert(error, 'Unable to generate invoice. Please try again.', 'Error');
@@ -482,8 +462,8 @@ const OrderHistoryScreen = () => {
     }
   };
 
-  const handleCallCafe = async () => {
-    const phoneUrl = `tel:${CAFE_PHONE_NUMBER}`;
+  const handleCallCafe = async (phone?: string) => {
+    const phoneUrl = `tel:${String(phone || '').replace(/[^\d+]/g, '') || CAFE_PHONE_NUMBER}`;
     try {
       const canOpen = await Linking.canOpenURL(phoneUrl);
       if (!canOpen) {
@@ -496,60 +476,60 @@ const OrderHistoryScreen = () => {
     }
   };
 
+  // Replaces the original Firestore onSnapshot live listeners with polling against the
+  // customer-app's own "my orders" endpoint — already scoped to the logged-in account and
+  // aggregated across every restaurant it's ordered from (see orderService.getMyOrders).
+  // The original app's in-app "manager mode" (role === '2') is gone — the
+  // restaurant-saas-platform's own staff web dashboard replaces it.
+  const updateOrdersIfChanged = (nextOrders: any[]) => {
+    const fingerprint = JSON.stringify(
+      nextOrders.map((order: any) => ({
+        id: String(order.id || ''),
+        status: String(order.status || ''),
+        total: Number(order.total || 0),
+        createdAt: getCreatedTime(order.createdAt),
+        reviewRating: Number(order?.review?.rating || 0),
+        reviewCount: Number(order?.review?.reviewCount || 0),
+        itemReviewKeys: Object.keys(order?.itemReviews || {}).sort().join('|'),
+      }))
+    );
+
+    if (fingerprint !== lastOrdersFingerprintRef.current) {
+      lastOrdersFingerprintRef.current = fingerprint;
+      setOrders(nextOrders);
+    }
+  };
+
   useEffect(() => {
-    // Replaces the original Firestore onSnapshot live listeners with polling against the
-    // customer-app's own "my orders" endpoint — already scoped to the logged-in account and
-    // aggregated across every restaurant it's ordered from (see orderService.getMyOrders).
-    // The original app's in-app "manager mode" (role === '2') is gone — the
-    // restaurant-saas-platform's own staff web dashboard replaces it.
     if (!user) {
       setOrders([]);
       setLoading(false);
       return;
     }
-
-    let cancelled = false;
-
-    const updateOrdersIfChanged = (nextOrders: any[]) => {
-      const fingerprint = JSON.stringify(
-        nextOrders.map((order: any) => ({
-          id: String(order.id || ''),
-          status: String(order.status || ''),
-          total: Number(order.total || 0),
-          createdAt: getCreatedTime(order.createdAt),
-          reviewRating: Number(order?.review?.rating || 0),
-          reviewCount: Number(order?.review?.reviewCount || 0),
-          itemReviewKeys: Object.keys(order?.itemReviews || {}).sort().join('|'),
-        }))
-      );
-
-      if (fingerprint !== lastOrdersFingerprintRef.current) {
-        lastOrdersFingerprintRef.current = fingerprint;
-        setOrders(nextOrders);
-      }
-    };
-
-    const fetchOrders = async () => {
-      try {
-        const nextOrders = await getMyOrders();
-        if (cancelled) return;
-        updateOrdersIfChanged(nextOrders);
-      } catch (error) {
-        console.error('Failed to load orders:', error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
     setLoading(true);
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 20000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    pagesLoadedRef.current = 1;
+    ordersRef.current = [];
+    setNextCursor(null);
+    setLoadMoreFailed(false);
   }, [user?.uid, user?.role]);
+
+  // Only while this tab is on screen and the app is in the foreground (see utils/polling.ts)
+  // — a tab you've switched away from used to keep polling every 20s regardless.
+  usePolling(
+    async () => {
+      try {
+        const firstPage = await getMyOrdersPage();
+        updateOrdersIfChanged(mergeFirstPage(firstPage.orders, ordersRef.current));
+        if (pagesLoadedRef.current <= 1) setNextCursor(firstPage.nextCursor);
+      } catch (error) {
+        if (!isRateLimited(error)) console.error('Failed to load orders:', error);
+      } finally {
+        setLoading(false);
+      }
+    },
+    ORDERS_POLL_MS,
+    Boolean(user)
+  );
 
   useEffect(() => {
     if (!user?.uid || orders.length === 0) {
@@ -559,8 +539,7 @@ const OrderHistoryScreen = () => {
     const successfulOrders = orders.filter((order: any) => {
       if (!order?.id) return false;
       if (order.userId !== user.uid) return false;
-      const status = String(order.status || '').toLowerCase();
-      return status.includes('deliver') || status.includes('completed') || status.includes('ready');
+      return isOrderDelivered(order.status);
     });
 
     if (successfulOrders.length === 0) {
@@ -584,6 +563,12 @@ const OrderHistoryScreen = () => {
   }, [orders, user?.uid]);
 
   const renderItem = ({ item, index }: { item: any; index: number }) => {
+    const billExpanded = expandedBills.has(String(item.id));
+    const orderTotal = Number(item.total ?? 0);
+    const amountDue = Number(item.amountDue ?? Math.max(0, Number(item.total || 0) - Number(item.amountPaid || 0)));
+    const balanceLabel = Number(item.amountDue || 0) > 0
+      ? (String(item.orderType) === OrderType.HOME_DELIVERY ? 'To pay on delivery' : 'Amount due')
+      : item.paymentStatus === 'PAID' || orderTotal === 0 ? 'Fully paid' : 'Amount due';
     const isScheduledOrder = item?.isScheduledOrder === true || String(item?.orderSource || '').toLowerCase() === 'scheduled';
     // Only show for home delivery orders
     const showTrackOrder = !isScheduledOrder && String(item.orderType) === OrderType.HOME_DELIVERY;
@@ -600,103 +585,156 @@ const OrderHistoryScreen = () => {
         item.deliveryLocation.longitude
       );
     }
-    const status = (item.status || '').toLowerCase();
-    const isDelivered = formatStatus(item.status) === 'Delivered';
-    const isCancelled = formatStatus(item.status) === 'Cancelled';
+    const isDelivered = isOrderDelivered(item.status);
+    const isCancelled = isOrderCancelled(item.status);
     const reviewedItemCount = getReviewedItemCount(item);
     const totalReviewableItems = getReviewableOrderItems(item).length;
     const hasReview = reviewedItemCount > 0;
     const allItemsReviewed = totalReviewableItems > 0 && reviewedItemCount >= totalReviewableItems;
     const visibleOrderId = String(item.displayOrderId || `#${item.id}`);
+    const restaurant = item.restaurant as OrderRestaurantSummary | null | undefined;
+    const statusStyle = isScheduledOrder ? orderStatusColors('scheduled') : orderStatusColors(item.status);
+    const orderTypeMeta = isScheduledOrder ? null : ORDER_TYPE_META[String(item.orderType)];
+    const allItems: any[] = item.items || [];
+    const visibleItems = allItems.slice(0, MAX_VISIBLE_ITEMS);
+    const hiddenItemCount = Math.max(0, allItems.length - MAX_VISIBLE_ITEMS);
 
     return (
       <Animated.View entering={FadeInDown.delay(index * 60).springify().damping(18)}>
       <Card>
         <CardPressArea disabled onPress={() => router.push(`/order/${item.id}`)}>
-          <Row>
-            <OrderId>Order {visibleOrderId}</OrderId>
-            <StatusBadge status={status}>{formatStatus(item.status)}</StatusBadge>
-          </Row>
-          <DateTimeText>{new Date(item.createdAt?.toDate?.() || item.createdAt).toLocaleString()}</DateTimeText>
+          <RestaurantHeader
+            disabled={!restaurant?.orgSlug}
+            onPress={() => restaurant && router.push({ pathname: '/user/restaurant-details', params: { restaurant: JSON.stringify({ ...restaurant, image: restaurant.logoUrl, coverImage: restaurant.coverImageUrl, restaurantId: restaurant.id, cafeId: restaurant.id }), categoryId: '0' } })}
+          >
+            <RestaurantLogo>
+              {restaurant?.logoUrl ? <AppImage uri={restaurant.logoUrl} style={{ width: '100%', height: '100%' }} /> : <Ionicons name="storefront-outline" size={22} color="#f68712" />}
+            </RestaurantLogo>
+            <RestaurantInfo>
+              <RestaurantName numberOfLines={1}>{restaurant?.name || 'Restaurant'}</RestaurantName>
+              {restaurant?.address ? <RestaurantAddress numberOfLines={1}>{restaurant.address}</RestaurantAddress> : null}
+            </RestaurantInfo>
+            <StatusPill style={{ backgroundColor: statusStyle.bg }}>
+              <StatusPillText style={{ color: statusStyle.fg }}>{isScheduledOrder ? 'Scheduled' : orderStatusLabel(item.status, orderKind(item.orderType))}</StatusPillText>
+            </StatusPill>
+          </RestaurantHeader>
+
+          <MetaRow>
+            <MetaText>{visibleOrderId}</MetaText>
+            <MetaDot />
+            <MetaText>{formatOrderDate(item.createdAt)}</MetaText>
+            {orderTypeMeta ? (
+              <>
+                <MetaDot />
+                <Ionicons name={orderTypeMeta.icon as any} size={13} color="#8a8f98" />
+                <MetaText style={{ marginLeft: 3 }}>{orderTypeMeta.label}</MetaText>
+              </>
+            ) : null}
+          </MetaRow>
           {isScheduledOrder ? (
-            <DateTimeText>
-              Reserved: {formatScheduledDateKey(item.scheduledDate) || item.scheduledDate || '-'}
+            <ScheduledText>
+              Reserved for {formatScheduledDateKey(item.scheduledDate) || item.scheduledDate || '-'}
               {item.slotLabel ? ` · ${item.slotLabel}` : ''}
-            </DateTimeText>
+            </ScheduledText>
           ) : null}
 
           <ItemsContainer>
-            {item.items && item.items.map((it: any, index: number) => (
-              <ItemRow key={`${item.id}-${String(it.firebaseId || it.id || it.name || 'item')}-${index}`}>
-                <ItemName>{it.name} x {it.quantity}</ItemName>
-                <ItemPrice>₹{(it.price * it.quantity).toFixed(2)}</ItemPrice>
+            {visibleItems.map((it: any, itemIndex: number) => (
+              <ItemRow key={`${item.id}-${String(it.firebaseId || it.id || it.name || 'item')}-${itemIndex}`}>
+                <ItemQty>{it.quantity}×</ItemQty>
+                <ItemName numberOfLines={1}>{it.name}</ItemName>
+                <ItemPrice>₹{(it.price * it.quantity).toFixed(0)}</ItemPrice>
               </ItemRow>
             ))}
+            {hiddenItemCount > 0 ? <MoreItemsText>+{hiddenItemCount} more item{hiddenItemCount === 1 ? '' : 's'}</MoreItemsText> : null}
           </ItemsContainer>
 
           <PricingSection>
-            <TotalAmount>₹{(item.total || 0).toFixed(2)}</TotalAmount>
-            {item.pricing && (
-              <PricingDetails>
-                {item.pricing.discount > 0 && <PricingText>Discount: -₹{item.pricing.discount.toFixed(2)}</PricingText>}
-                {(item.pricing.packagingCharge || 0) > 0 && <PricingText>Packaging & Other Charges: ₹{item.pricing.packagingCharge.toFixed(2)}</PricingText>}
-                {(item.pricing.deliveryFee || 0) > 0 && <PricingText>Delivery Fee: ₹{item.pricing.deliveryFee.toFixed(2)}</PricingText>}
-                {(item.pricing.walletUsed || 0) > 0 && <PricingText>Wallet Used: -₹{item.pricing.walletUsed.toFixed(2)}</PricingText>}
-              </PricingDetails>
+            <BillToggle
+              accessibilityRole="button"
+              accessibilityState={{ expanded: billExpanded }}
+              accessibilityLabel={`Order total ₹${orderTotal.toFixed(2)}. ${billExpanded ? 'Hide' : 'Show'} price breakdown`}
+              onPress={() => toggleBill(String(item.id))}
+            >
+              <BillToggleText>
+                <TotalLabel>Order total</TotalLabel>
+                <BillToggleHint>{billExpanded ? 'Hide price breakdown' : isCancelled ? 'View price breakdown' : `${balanceLabel}${amountDue > 0 ? ` · ₹${amountDue.toFixed(2)}` : ''} · View breakdown`}</BillToggleHint>
+              </BillToggleText>
+              <TotalAmount>₹{orderTotal.toFixed(2)}</TotalAmount>
+              <Ionicons name={billExpanded ? 'chevron-up' : 'chevron-down'} size={18} color="#8a8f98" style={{ marginLeft: 6 }} />
+            </BillToggle>
+            {billExpanded && (
+              <BillDetails>
+            <BillRow><PricingText>Item subtotal</PricingText><BillValue>{item.pricing?.subtotal != null ? `₹${Number(item.pricing.subtotal).toFixed(2)}` : 'Unavailable'}</BillValue></BillRow>
+            <BillRow><PricingText>Discount</PricingText><BillValue style={Number(item.pricing?.discount || 0) > 0 ? { color: '#25854c' } : undefined}>{Number(item.pricing?.discount || 0) > 0 ? '−' : ''}₹{Number(item.pricing?.discount || 0).toFixed(2)}</BillValue></BillRow>
+            <BillRow><PricingText>Packaging charges</PricingText><BillValue>₹{Number(item.pricing?.packagingCharge || 0).toFixed(2)}</BillValue></BillRow>
+            {Number(item.pricing?.tax || 0) > 0 && <BillRow><PricingText>Taxes</PricingText><BillValue>₹{Number(item.pricing.tax).toFixed(2)}</BillValue></BillRow>}
+            {Number(item.pricing?.deliveryFee || 0) > 0 && <BillRow><PricingText>Delivery fee</PricingText><BillValue>₹{Number(item.pricing.deliveryFee).toFixed(2)}</BillValue></BillRow>}
+            {Number(item.pricing?.serviceCharge || 0) > 0 && <BillRow><PricingText>Service charge</PricingText><BillValue>₹{Number(item.pricing.serviceCharge).toFixed(2)}</BillValue></BillRow>}
+            {Number(item.pricing?.roundOff || 0) !== 0 && <BillRow><PricingText>Rounding adjustment</PricingText><BillValue>{Number(item.pricing.roundOff) < 0 ? '−' : '+'}₹{Math.abs(Number(item.pricing.roundOff)).toFixed(2)}</BillValue></BillRow>}
+            <BillRow><PricingText>Paid from wallet</PricingText><BillValue style={Number(item.pricing?.walletUsed || 0) > 0 ? { color: '#25854c' } : undefined}>₹{Number(item.pricing?.walletUsed || 0).toFixed(2)}</BillValue></BillRow>
+            {Math.max(0, Number(item.amountPaid || 0) - Number(item.pricing?.walletUsed || 0)) > 0 && <BillRow><PricingText>Other payments received</PricingText><BillValue>₹{Math.max(0, Number(item.amountPaid || 0) - Number(item.pricing?.walletUsed || 0)).toFixed(2)}</BillValue></BillRow>}
+            {!isCancelled && <BalanceRow>
+              <BalanceLabel>{balanceLabel}</BalanceLabel>
+              <BalanceValue>₹{amountDue.toFixed(2)}</BalanceValue>
+            </BalanceRow>}
+              </BillDetails>
             )}
           </PricingSection>
         </CardPressArea>
 
         <ActionsRow>
-          {!isDelivered && !isCancelled && showTrackOrder && (
-            <ReviewButton
-              onPress={() => router.push({
-                pathname: '/user/track-order',
-                params: {
-                  status: item.status,
-                  orderId: String(item.id),
-                  distance: distanceKm,
-                  placedAt: getCreatedTime(item.createdAt),
-                },
-              })}
-            >
-              <ReviewButtonText>Track Order</ReviewButtonText>
-            </ReviewButton>
+          {!isDelivered && !isCancelled && (
+            <CancelOrderButton
+              orderId={String(item.id)}
+              cancellableUntil={item.cancellableUntil}
+              onCancelled={() => void refreshFirstPage()}
+              fallback={showTrackOrder ? (
+              <ReviewButton
+                onPress={() => router.push({
+                  pathname: '/user/track-order',
+                  params: {
+                    status: item.status,
+                    orderId: String(item.id),
+                    distance: distanceKm,
+                    placedAt: getCreatedTime(item.createdAt),
+                  },
+                })}
+              >
+                <ReviewButtonText>Track Order</ReviewButtonText>
+              </ReviewButton>
+              ) : null}
+            />
           )}
           {!isDelivered && !isCancelled && (
-            <CallButton onPress={handleCallCafe}>
+            <CallButton onPress={() => handleCallCafe(restaurant?.phone)}>
               <Ionicons name="call-outline" size={16} color="#fff" />
-              <CallButtonText>Call Cafe</CallButtonText>
+              <CallButtonText>Call Restaurant</CallButtonText>
             </CallButton>
           )}
 
 
           {isDelivered && !isScheduledOrder && (
             <>
-              <InvoiceButton
+              <InvoiceIconButton
+                accessibilityRole="button"
+                accessibilityLabel="Download invoice"
                 onPress={() => handleDownloadInvoice(item)}
                 disabled={downloadingInvoiceId === item.id}
               >
                 {downloadingInvoiceId === item.id ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color="#f68712" />
                 ) : (
-                  <InvoiceButtonRow>
-                    <InvoiceButtonText>Invoice</InvoiceButtonText>
-                    <Ionicons name="download-outline" size={18} color="#fff" style={{ marginLeft: 6 }} />
-                  </InvoiceButtonRow>
+                  <Ionicons name="document-text-outline" size={20} color="#f68712" />
                 )}
-              </InvoiceButton>
-
-              <ReviewButton
-                onPress={() => handleReorder(item)}
-              >
-                <ReviewButtonText>Reorder</ReviewButtonText>
-              </ReviewButton>
+              </InvoiceIconButton>
 
               <ReviewButton
                 disabled={allItemsReviewed}
                 onPress={() => openReviewModal(item)}
+                style={{ opacity: allItemsReviewed ? 0.6 : 1 }}
               >
+                <Ionicons name={allItemsReviewed ? 'star' : 'star-outline'} size={15} color="#f68712" />
                 <ReviewButtonText>
                   {allItemsReviewed
                     ? 'Already Rated'
@@ -705,6 +743,11 @@ const OrderHistoryScreen = () => {
                       : 'Rate Items'}
                 </ReviewButtonText>
               </ReviewButton>
+
+              <InvoiceButton onPress={() => handleReorder(item)}>
+                <Ionicons name="refresh" size={16} color="#fff" />
+                <InvoiceButtonText>Reorder</InvoiceButtonText>
+              </InvoiceButton>
             </>
           )}
 
@@ -739,19 +782,32 @@ const OrderHistoryScreen = () => {
 
   return (
     <Container>
-      <Animated.View entering={FadeInDown.springify().damping(18)}>
-      <HeaderContainer>
-        <BackButton onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={32} color="#282939" />
-        </BackButton>
-        <Title>Order History</Title>
-      </HeaderContainer>
-      </Animated.View>
+      <PageHeader title="Order History" showBack={false} />
 
       {orders.length === 0 ? (
         <EmptyText>No orders found.</EmptyText>
       ) : (
-        <FlatList data={orders} keyExtractor={o => o.id} renderItem={renderItem} contentContainerStyle={{ padding: 16 }} />
+        <FlatList
+          data={orders}
+          keyExtractor={o => o.id}
+          renderItem={renderItem}
+          extraData={expandedBills}
+          contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
+          showsVerticalScrollIndicator={false}
+          onEndReached={() => { if (!loadMoreFailed) void loadMoreOrders(); }}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={
+            loadingMore ? (
+              <ListFooter><ActivityIndicator color="#f68712" /></ListFooter>
+            ) : loadMoreFailed ? (
+              <ListFooter>
+                <LoadMoreButton onPress={() => void loadMoreOrders()}><LoadMoreText>Couldn&apos;t load older orders. Tap to retry</LoadMoreText></LoadMoreButton>
+              </ListFooter>
+            ) : !nextCursor && orders.length > 0 ? (
+              <ListFooter><EndOfListText>You&apos;ve reached the end of your order history</EndOfListText></ListFooter>
+            ) : null
+          }
+        />
       )}
 
       <Modal
@@ -843,20 +899,6 @@ const OrderHistoryScreen = () => {
   );
 };
 
-function formatStatus(s: string) {
-  if (!s) return 'Pending';
-  const lower = s.toLowerCase();
-  if (lower.includes('scheduled')) return 'Scheduled';
-  if (lower.includes('processing')) return 'Processing';
-  if (lower.includes('cancel')) return 'Cancelled';
-  if (lower.includes('confirm')) return 'Confirmed';
-  if (lower.includes('prepar')) return 'Preparing';
-  if (lower.includes('dispatch')) return 'Dispatched';
-  if (lower.includes('ready')) return 'Ready for Pickup';
-  if (lower.includes('deliver') || lower.includes('completed')) return 'Delivered';
-  return s;
-}
-
 export default OrderHistoryScreen;
 
 function getCreatedTime(createdAt: any) {
@@ -877,18 +919,10 @@ function getCreatedTime(createdAt: any) {
   return 0;
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
-  background-color: #fff;
+  background-color: #faf7f4;
 `;
 
 const Center = styled.View`
@@ -903,57 +937,88 @@ const EmptyText = styled.Text`
   color: #666;
 `;
 
-const Card = styled.View`
+const Card = styled.View.attrs({
+  style: { shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+})`
   background: #fff;
-  border-radius: 12px;
-  padding: 12px;
-  margin-bottom: 12px;
-  border: 1px solid #f0f0f0;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 14px;
+  border: 1px solid #f1ebe5;
 `;
 
 const CardPressArea = styled.TouchableOpacity``;
 
-const Row = styled.View`
+const RestaurantHeader = styled.TouchableOpacity`
   flex-direction: row;
-  justify-content: space-between;
   align-items: center;
+  padding-bottom: 12px;
+  border-bottom-width: 1px;
+  border-bottom-color: #f3eee9;
 `;
 
-const SmallRow = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  margin-top: 6px;
+const RestaurantLogo = styled.View`
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  overflow: hidden;
+  background-color: #fff4e6;
+  align-items: center;
+  justify-content: center;
 `;
 
-const OrderId = styled.Text`
-  font-weight: 700;
-  color: #333;
+const RestaurantInfo = styled.View`
+  flex: 1;
+  margin: 0 10px;
 `;
 
-const StatusBadge = styled.Text<{ status: string }>`
-  padding: 6px 10px;
-  border-radius: 16px;
-  color: #fff;
-  background-color: ${(props) => {
-    const s = props.status || '';
-    if (s.includes('scheduled')) return '#6366f1';
-    if (s.includes('processing')) return '#f39c12';
-    if (s.includes('cancel')) return '#e74c3c';
-    if (s.includes('confirm')) return '#2ecc71';
-    if (s.includes('prepar')) return '#f39c12';
-    if (s.includes('dispatch')) return '#3498db';
-    if (s.includes('ready')) return '#f39c12';
-    if (s.includes('deliver') || s.includes('completed')) return '#27ae60';
-    return '#95a5a6';
-  }};
+const RestaurantName = styled.Text`
+  font-size: 15px;
+  font-weight: 800;
+  color: #1a1f2b;
 `;
 
-
-const DateTimeText = styled.Text`
-  color: #666;
+const RestaurantAddress = styled.Text`
   font-size: 12px;
+  color: #8a8f98;
+  margin-top: 2px;
+`;
+
+const StatusPill = styled.View`
+  padding: 5px 10px;
+  border-radius: 14px;
+`;
+
+const StatusPillText = styled.Text`
+  font-size: 12px;
+  font-weight: 800;
+`;
+
+const MetaRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+`;
+
+const MetaText = styled.Text`
+  font-size: 12px;
+  color: #8a8f98;
+`;
+
+const MetaDot = styled.View`
+  width: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background-color: #c4c7cc;
+  margin: 0 7px;
+`;
+
+const ScheduledText = styled.Text`
+  color: #4f46e5;
+  font-size: 12px;
+  font-weight: 600;
   margin-top: 6px;
-  margin-bottom: 10px;
 `;
 
 const ItemsContainer = styled.View`
@@ -962,57 +1027,140 @@ const ItemsContainer = styled.View`
 
 const ItemRow = styled.View`
   flex-direction: row;
-  justify-content: space-between;
-  padding: 6px 0;
-  border-bottom-width: 1px;
-  border-bottom-color: #f5f5f5;
+  align-items: center;
+  padding: 4px 0;
+`;
+
+const ItemQty = styled.Text`
+  width: 28px;
+  color: #f68712;
+  font-weight: 800;
+  font-size: 13px;
 `;
 
 const ItemName = styled.Text`
+  flex: 1;
   color: #333;
+  font-size: 14px;
+  margin-right: 8px;
 `;
 
 const ItemPrice = styled.Text`
-  color: #333;
+  color: #555;
+  font-size: 13px;
+`;
+
+const MoreItemsText = styled.Text`
+  color: #8a8f98;
+  font-size: 12px;
+  margin-top: 2px;
+  margin-left: 28px;
 `;
 
 const PricingSection = styled.View`
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top-width: 1px;
-  border-top-color: #f0f0f0;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  background-color: #fffbf7;
+  border: 1px solid #eee6df;
+  gap: 8px;
 `;
-
+const BillToggle = styled.TouchableOpacity`
+  flex-direction: row;
+  align-items: center;
+`;
+const BillToggleText = styled.View`
+  flex: 1;
+  gap: 2px;
+`;
+const BillToggleHint = styled.Text`
+  font-size: 12px;
+  color: #8a8f98;
+`;
+const BillDetails = styled.View`
+  gap: 8px;
+  border-top-width: 1px;
+  border-top-color: #e9e1d9;
+  padding-top: 10px;
+`;
+const BillHeading = styled.Text`
+  font-size: 13px;
+  font-weight: 700;
+  color: #303540;
+  margin-bottom: 3px;
+`;
+const BillRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+`;
+const PricingText = styled.Text`
+  flex: 1;
+  font-size: 12px;
+  color: #837b78;
+`;
+const BillValue = styled.Text`
+  font-size: 12px;
+  color: #343945;
+  font-weight: 600;
+`;
+const BillTotalRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top-width: 1px;
+  border-top-color: #e9e1d9;
+  padding-top: 10px;
+  margin-top: 2px;
+  margin-bottom: 4px;
+`;
+const TotalLabel = styled.Text`
+  flex: 1;
+  font-size: 14px;
+  font-weight: 700;
+  color: #303540;
+`;
 const TotalAmount = styled.Text`
   font-size: 18px;
-  font-weight: 700;
-  color: #f68712;
-  margin-bottom: 6px;
+  font-weight: 800;
+  color: #1a1f2b;
 `;
-
-const PricingDetails = styled.View`
-  flex-direction: column;
-  gap: 4px;
+const BalanceRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background-color: #fff0df;
+  padding: 10px;
+  border-radius: 8px;
+  margin-top: 3px;
 `;
-
-const PricingText = styled.Text`
+const BalanceLabel = styled.Text`
+  flex: 1;
   font-size: 12px;
-  color: #666;
-  font-weight: 500;
+  font-weight: 600;
+  color: #9b591d;
+`;
+const BalanceValue = styled.Text`
+  font-size: 14px;
+  font-weight: 700;
+  color: #9b591d;
 `;
 
 const ActionsRow = styled.View`
   flex-direction: row;
-  justify-content: space-between;
   align-items: center;
   margin-top: 12px;
-  gap: 10px;
+  gap: 8px;
 `;
 
 const CallButton = styled.TouchableOpacity`
+  flex: 1;
   background-color: #2e7d32;
-  border-radius: 8px;
-  min-height: 40px;
+  border-radius: 10px;
+  min-height: 42px;
   padding: 0 12px;
   flex-direction: row;
   align-items: center;
@@ -1026,11 +1174,47 @@ const CallButtonText = styled.Text`
   font-size: 13px;
 `;
 
+const ListFooter = styled.View`
+  padding: 16px 0 8px;
+  align-items: center;
+`;
+
+const LoadMoreButton = styled.TouchableOpacity`
+  padding: 10px 16px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-color: #f68712;
+`;
+
+const LoadMoreText = styled.Text`
+  color: #f68712;
+  font-size: 13px;
+  font-weight: 600;
+`;
+
+const EndOfListText = styled.Text`
+  color: #9ca3af;
+  font-size: 12px;
+`;
+
+const InvoiceIconButton = styled.TouchableOpacity`
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border-width: 1px;
+  border-color: #f3d3b0;
+  background-color: #fff8f0;
+  align-items: center;
+  justify-content: center;
+`;
+
 const InvoiceButton = styled.TouchableOpacity`
-  background-color: #f68712;
-  border-radius: 8px;
-  min-height: 40px;
   flex: 1;
+  background-color: #f68712;
+  border-radius: 10px;
+  min-height: 42px;
+  flex-direction: row;
+  gap: 6px;
   justify-content: center;
   align-items: center;
 `;
@@ -1042,12 +1226,15 @@ const InvoiceButtonText = styled.Text`
 `;
 
 const ReviewButton = styled.TouchableOpacity`
+  flex: 1;
   background-color: #ffffff;
   border-width: 1px;
   border-color: #f68712;
-  border-radius: 8px;
-  min-height: 40px;
+  border-radius: 10px;
+  min-height: 42px;
   padding: 0 12px;
+  flex-direction: row;
+  gap: 5px;
   justify-content: center;
   align-items: center;
 `;
@@ -1056,28 +1243,6 @@ const ReviewButtonText = styled.Text`
   color: #f68712;
   font-weight: 700;
   font-size: 13px;
-`;
-
-const HeaderContainer = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding: 10px;
-  padding-top: 30px;
-`;
-
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
-
-const Title = styled.Text`
-  font-size: 20px;
-  font-weight: bold;
-  padding: 0 20px;
-  width: 70%;
-  text-align: center;
 `;
 
 const ReviewModalOverlay = styled.View`
@@ -1229,10 +1394,5 @@ const SubmitButton = styled.TouchableOpacity`
 const SubmitButtonText = styled.Text`
   color: #fff;
   font-weight: 700;
-`;
-// Fix: Define InvoiceButtonRow before usage
-const InvoiceButtonRow = styled.View`
-  flex-direction: row;
-  align-items: center;
 `;
 

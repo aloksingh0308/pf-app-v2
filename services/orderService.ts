@@ -1,3 +1,4 @@
+import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { OrderType } from "../types/enums";
 import { apiClient } from "../utils/apiClient";
 import { getActiveOrgSlug, getActiveBranchCode } from "./restaurantContext";
@@ -38,6 +39,8 @@ export interface OrderPricing {
     coinsRedeemed?: number;
     totalBeforeWallet?: number;
     tax?: number;
+    serviceCharge?: number;
+    roundOff?: number;
     couponCode?: string | null;
     couponType?: string | null;
     couponValue?: number | null;
@@ -72,6 +75,9 @@ export interface Order {
     status: string;
     source?: string;
     createdAt: Timestamp;
+    /** When the customer's own "Cancel order" option ends (ISO) — null once it can't be
+     *  cancelled from the app (server-decided: 2 min after placing, before the food is ready). */
+    cancellableUntil?: string | null;
     customerName: string;
     mobileNumber: string;
     email?: string | null;
@@ -191,6 +197,8 @@ export type PosOrderItemPayload = {
     variantName?: string;
     modifierSelections?: { modifierId: string; optionNames: string[] }[];
     addonIds?: string[];
+    /** Set on a combo's dishes — the server then charges the combo's price for them. */
+    comboId?: string;
 };
 
 export function toPosOrderItems(items: OrderItem[]): PosOrderItemPayload[] {
@@ -201,17 +209,23 @@ export function toPosOrderItems(items: OrderItem[]): PosOrderItemPayload[] {
         // client-side (see utils/productVariants.ts's getProductVariants fallback) purely
         // so the cart-key logic can tell lines apart; that placeholder is never a variant
         // the backend knows about, so sending it would just fail item lookup.
+        // The name goes only with a real variant too — the synthetic "Regular" of a dish with
+        // no sizes would otherwise be looked up as a size the dish doesn't have.
         if (item.selectedVariantId && MONGO_ID_PATTERN.test(item.selectedVariantId)) {
             payload.variantId = item.selectedVariantId;
-        }
             if (item.selectedVariantName) {
                 payload.variantName = item.selectedVariantName;
             }
+        }
         if (item.selectedModifiers && item.selectedModifiers.length > 0) {
             payload.modifierSelections = item.selectedModifiers;
         }
         if (item.selectedAddonIds && item.selectedAddonIds.length > 0) {
             payload.addonIds = item.selectedAddonIds;
+        }
+        // A combo's dishes go with the combo's id, or the server would bill them at full price.
+        if (item.isDeal && item.dealId && MONGO_ID_PATTERN.test(item.dealId)) {
+            payload.comboId = item.dealId;
         }
         return payload;
     });
@@ -260,7 +274,7 @@ export async function placeOrder(
     existingOrderId?: string | null,
     restaurantName?: string | null,
 ): Promise<string> {
-    void email; void userId; void cafeId; void deliveryLocation; void deliveryAddressId; void existingOrderId; void restaurantName;
+    void email; void userId; void cafeId; void deliveryAddressId; void existingOrderId; void restaurantName;
 
     const isTakeAwayOrder = String(orderType || '') === OrderType.TAKE_AWAY;
     const isHomeDeliveryOrder = String(orderType || '') === OrderType.HOME_DELIVERY;
@@ -290,6 +304,10 @@ export async function placeOrder(
     const order = await apiClient.post<BackendOrder>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/orders`, {
         orderType: isTakeAwayOrder ? "TAKEAWAY" : "HOME_DELIVERY",
         deliveryAddress: isHomeDeliveryOrder ? deliveryAddress : undefined,
+        // The pinned drop location — shown on the customer's live tracking map.
+        ...(isHomeDeliveryOrder && deliveryLocation && Number.isFinite(deliveryLocation.latitude) && Number.isFinite(deliveryLocation.longitude)
+            ? { deliveryLatitude: deliveryLocation.latitude, deliveryLongitude: deliveryLocation.longitude }
+            : {}),
         items: posItems,
         customerName,
         customerPhone: mobileNumber,
@@ -298,7 +316,10 @@ export async function placeOrder(
         coinsRedeemed,
         source: "APP",
     });
+        console.log(order)
+
     return order._id;
+
 }
 
 interface BackendOrderReview {
@@ -320,11 +341,36 @@ interface BackendOrder {
     // getRestaurants() (whose `id`/`cafeId` is this same branch id).
     branchId?: string;
     total?: number;
-    pricing: { subtotal: number; discountAmount: number; taxAmount: number; deliveryChargeAmount: number; packagingChargeAmount: number; total: number };
-    items: { menuItemId: string; name: string; unitPrice: number; quantity: number; lineTotal: number }[];
+    pricing: {
+        subtotal: number;
+        discountAmount: number;
+        taxAmount: number;
+        deliveryChargeAmount: number;
+        couponCode?: string;
+        packagingChargeAmount: number;
+        serviceChargeAmount?: number;
+        roundOffAmount?: number;
+        total: number;
+        walletPayment?: number;
+        coinDiscount?: number;
+    };
+    /** What's been paid so far (wallet at checkout, then cash/UPI on delivery). */
+    amountPaid?: number;
+    paymentStatus?: "UNPAID" | "PARTIAL" | "PAID" | "REFUNDED";
+    items: {
+        menuItemId: string;
+        name: string;
+        unitPrice: number;
+        quantity: number;
+        lineTotal: number;
+        variantName?: string;
+        modifiers?: { groupName: string; optionName: string }[];
+        addons?: { name: string }[];
+    }[];
     customerName: string;
     customerPhone?: string;
     createdAt: string;
+    cancellableUntil?: string | null;
     deliveryAddress?: string | null;
     review?: BackendOrderReview | null;
     isScheduledOrder?: boolean;
@@ -332,6 +378,21 @@ interface BackendOrder {
     slotLabel?: string;
     slotStart?: string;
     slotEnd?: string;
+    /** Where the order was placed — attached by the backend's "my orders" endpoint only. */
+    restaurant?: OrderRestaurantSummary | null;
+}
+
+export interface OrderRestaurantSummary {
+    id: string;
+    name: string;
+    orgSlug: string;
+    branchCode: string;
+    logoUrl: string | null;
+    coverImageUrl: string | null;
+    phone: string;
+    address: string;
+    fssai?: string;
+    gstNumber?: string;
 }
 
 /** Backend stores one review per order (one shared comment/photo, per-item star ratings) —
@@ -385,6 +446,12 @@ function mapBackendOrder(order: BackendOrder): Order {
             name: item.name,
             price: item.unitPrice,
             quantity: item.quantity,
+            // Server-priced line amount (includes modifiers/add-ons) — the invoice and
+            // order summaries use this rather than unitPrice × quantity.
+            lineTotal: item.lineTotal,
+            selectedVariantName: item.variantName || null,
+            modifierNames: (item.modifiers || []).map((modifier) => modifier.optionName).filter(Boolean),
+            addonNames: (item.addons || []).map((addon) => addon.name).filter(Boolean),
         })),
         total: order.pricing.total,
         orderType: BACKEND_ORDER_TYPE_TO_APP[order.orderType] || order.orderType,
@@ -399,13 +466,28 @@ function mapBackendOrder(order: BackendOrder): Order {
         customerName: order.customerName,
         mobileNumber: order.customerPhone || "",
         createdAt: order.createdAt as unknown as Timestamp,
+        cancellableUntil: order.cancellableUntil || null,
         pricing: {
             subtotal: order.pricing.subtotal,
             discount: order.pricing.discountAmount,
+            couponCode: order.pricing.couponCode || null,
+            tax: order.pricing.taxAmount,
+            serviceCharge: order.pricing.serviceChargeAmount ?? 0,
+            roundOff: order.pricing.roundOffAmount ?? 0,
             packagingCharge: order.pricing.packagingChargeAmount,
             deliveryFee: order.pricing.deliveryChargeAmount,
+            // Wallet money is a PAYMENT towards `total` (not a discount), so it's shown as
+            // "paid", and `amountDue` is what's left to pay on delivery.
+            walletUsed: order.pricing.walletPayment ?? 0,
+            coinDiscount: order.pricing.coinDiscount ?? 0,
         },
+        amountPaid: order.amountPaid ?? 0,
+        amountDue: order.paymentStatus === "PAID" ? 0 : Math.max(0, Math.round((order.pricing.total - (order.amountPaid ?? 0)) * 100) / 100),
+        paymentStatus: order.paymentStatus ?? "UNPAID",
         displayOrderId: order.orderNumber,
+        restaurant: order.restaurant
+            ? { ...order.restaurant, logoUrl: resolveImageUrl(order.restaurant.logoUrl) || null, coverImageUrl: resolveImageUrl(order.restaurant.coverImageUrl) || null }
+            : null,
         ...reviewFields,
         ...(order.isScheduledOrder
             ? {
@@ -418,6 +500,31 @@ function mapBackendOrder(order: BackendOrder): Order {
             }
             : {}),
     } as unknown as Order;
+}
+
+export type OrderTracking = {
+    orderId: string;
+    status: string;
+    deliveryStatus: string | null;
+    cafeLocation: { latitude: number; longitude: number } | null;
+    restaurantPhone: string;
+    deliveryLocation: { latitude: number; longitude: number } | null;
+    partner: { name: string; phone: string } | null;
+    partnerLocation: { latitude: number; longitude: number } | null;
+    partnerLocationUpdatedAt: string | null;
+};
+
+/** Live tracking for one of the customer's orders — restaurant location, drop pin, and the
+ *  rider's live position while they're carrying it (backend customerOrderTracking.service.ts).
+ *  Replaces the Firestore `order_tracking` doc. */
+/** The customer cancelling their own order (only while `cancellableUntil` is in the future).
+ *  The backend returns any wallet/coins used and frees the coupon. */
+export async function cancelMyOrder(orderId: string, reason?: string): Promise<void> {
+    await apiClient.post(`/public/customers/me/orders/${encodeURIComponent(orderId)}/cancel`, reason ? { reason } : {});
+}
+
+export async function getOrderTracking(orderId: string): Promise<OrderTracking> {
+    return apiClient.get<OrderTracking>(`/public/customers/me/orders/${encodeURIComponent(orderId)}/tracking`);
 }
 
 /** Replaces the Firestore Storage upload (`uploadBytes`/`getDownloadURL`) used for review
@@ -446,6 +553,17 @@ export async function getMyOrders(): Promise<(Order & { id: string })[]> {
     // Firestore docs always carried their id alongside their data (`docSnap.id`) — `id`
     // here plays that same role, since the mapped `Order` shape itself has no id field.
     return orders.map((order) => ({ id: order._id, ...mapBackendOrder(order) }));
+}
+
+export const ORDER_HISTORY_PAGE_SIZE = 15;
+
+/** One page of the customer's order history, newest first. Pass the previous page's
+ *  `nextCursor` as `before` to load the next (older) page; `nextCursor` is null once
+ *  there's nothing older. */
+export async function getMyOrdersPage(before?: string | null, limit = ORDER_HISTORY_PAGE_SIZE): Promise<{ orders: (Order & { id: string })[]; nextCursor: string | null }> {
+    const query = `limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    const page = await apiClient.get<{ orders: BackendOrder[]; nextCursor: string | null }>(`/public/customers/me/orders?${query}`);
+    return { orders: page.orders.map((order) => ({ id: order._id, ...mapBackendOrder(order) })), nextCursor: page.nextCursor };
 }
 
 /** Polls a single order's current status — replaces the `onSnapshot` live listener on the

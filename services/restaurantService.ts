@@ -1,5 +1,6 @@
 import { apiClient } from '../utils/apiClient';
 import { resolveImageUrl } from '../utils/resolveImageUrl';
+import type { FoodType } from '../types/Product';
 
 export type RestaurantRecord = {
   id: string;
@@ -27,7 +28,22 @@ export type RestaurantRecord = {
   /** km from the customer's current location, computed backend-side — null when either the
    *  customer's location or this branch's coordinates aren't available (never fabricated). */
   distanceKm?: number | null;
+  /** Distinct food types this branch currently sells (backend-computed from its live menu) —
+   *  powers Home's Pure Veg / Non-Veg filter. Empty = no sellable items right now. */
+  menuFoodTypes?: FoodType[];
   [key: string]: any;
+};
+
+export type RestaurantFoodFilter = 'ALL' | 'PURE_VEG' | 'NON_VEG';
+
+/** "Pure Veg" = everything on the menu is veg/vegan; "Non-Veg" = serves at least one non-veg
+ *  dish. A restaurant whose food types are unknown (older cached record) only matches "All". */
+export const matchesRestaurantFoodFilter = (restaurant: RestaurantRecord, filter: RestaurantFoodFilter): boolean => {
+  if (filter === 'ALL') return true;
+  const types = restaurant.menuFoodTypes || [];
+  if (types.length === 0) return false;
+  if (filter === 'PURE_VEG') return types.every((type) => type === 'VEG' || type === 'VEGAN');
+  return types.includes('NON_VEG');
 };
 
 /** "17-17 min" reads like a typo, not a real delivery estimate — collapses to a single
@@ -159,7 +175,7 @@ export const getRestaurantClosedMessage = (openingHours?: string) => {
   return 'Cafe is currently closed right now. Please try again during opening hours.';
 };
 
-interface BackendDirectoryRestaurant {
+export interface BackendDirectoryRestaurant {
   id: string;
   orgSlug: string;
   branchCode: string;
@@ -171,6 +187,8 @@ interface BackendDirectoryRestaurant {
   coverImageUrl?: string | null;
   backgroundImageUrl?: string | null;
   foodType?: string;
+  menuFoodTypes?: FoodType[];
+  rating?: { average: number; count: number };
   phone?: string;
   address?: { line1?: string; city?: string } | null;
   latitude?: number | null;
@@ -216,7 +234,7 @@ function formatOpeningHours(operatingHours?: BackendDirectoryRestaurant['operati
  *  so screens/services downstream can tell the backend which restaurant they mean (see
  *  services/restaurantContext.ts) — the old Firestore doc had no such concept since a
  *  restaurant's whole menu lived under its own doc id already. */
-function mapDirectoryRestaurant(restaurant: BackendDirectoryRestaurant): RestaurantRecord {
+export function mapDirectoryRestaurant(restaurant: BackendDirectoryRestaurant): RestaurantRecord {
   const address = [restaurant.address?.line1, restaurant.address?.city].filter(Boolean).join(', ');
   return {
     id: restaurant.id,
@@ -245,8 +263,20 @@ function mapDirectoryRestaurant(restaurant: BackendDirectoryRestaurant): Restaur
     isNew: restaurant.ranking?.isNew || false,
     eta: restaurant.ranking?.eta,
     distanceKm: restaurant.ranking?.distanceKm ?? null,
+    menuFoodTypes: restaurant.menuFoodTypes || [],
+    rating: restaurant.rating?.average || 0,
+    ratingCount: restaurant.rating?.count || 0,
   };
 }
+
+/** Live customer rating for one restaurant (average of every dish rating it has received —
+ *  see the backend's getRatingsByBranch) — for screens opened with a possibly-stale record. */
+export const getRestaurantRating = async (orgSlug: string, branchCode: string): Promise<{ average: number; count: number }> => {
+  const context = await apiClient.get<{ rating?: { average: number; count: number } }>(
+    `/public/branch/${encodeURIComponent(orgSlug)}/${encodeURIComponent(branchCode)}`
+  );
+  return context.rating || { average: 0, count: 0 };
+};
 
 /** Replaces the original app's direct read of the Firestore `restaurants` collection —
  *  that collection was never scoped to one organization either (this app has always been a
@@ -281,24 +311,45 @@ export type MenuItemSearchResult = {
   restaurant: RestaurantRecord;
 };
 
+export type CuisineSearchResult = { name: string; restaurants: RestaurantRecord[] };
+export type CategorySearchResult = { id: string; name: string; imageUrl?: string; restaurant: RestaurantRecord };
+export type SearchResults = {
+  restaurants: RestaurantRecord[];
+  cuisines: CuisineSearchResult[];
+  categories: CategorySearchResult[];
+  menuItems: MenuItemSearchResult[];
+};
+export const EMPTY_SEARCH_RESULTS: SearchResults = { restaurants: [], cuisines: [], categories: [], menuItems: [] };
+
 interface BackendSearchResponse {
   restaurants: BackendDirectoryRestaurant[];
+  cuisines?: Array<{ name: string; restaurants: BackendDirectoryRestaurant[] }>;
+  categories?: Array<{ id: string; name: string; imageUrl?: string | null; restaurant: BackendDirectoryRestaurant }>;
   menuItems: Array<{ id: string; name: string; price: number; imageUrl?: string | null; foodType?: string; restaurant: BackendDirectoryRestaurant }>;
 }
 
-/** Platform-wide search — matches restaurant/branch names AND menu item names in one call
- *  (home.tsx's search bar), replacing what used to be a dead UI shell with no logic behind
- *  it. Two independent lists rather than one merged one: a restaurant-name hit means "open
- *  this restaurant", an item-name hit means "here's this dish, wherever it's sold". */
+/** Platform-wide search (home.tsx's search bar) across restaurant names, cuisines, menu
+ *  category names and dish names — returned as separate groups because each means
+ *  something different to tap: a restaurant opens it, a cuisine lists the restaurants
+ *  serving it, a category opens that restaurant's menu at the category, a dish opens the
+ *  restaurant selling it. */
 export const searchRestaurantsAndMenuItems = async (
-  query: string
-): Promise<{ restaurants: RestaurantRecord[]; menuItems: MenuItemSearchResult[] }> => {
+  query: string,
+  coords?: { latitude: number; longitude: number } | null
+): Promise<SearchResults> => {
   const trimmed = query.trim();
-  if (!trimmed) return { restaurants: [], menuItems: [] };
+  if (!trimmed) return EMPTY_SEARCH_RESULTS;
 
-  const result = await apiClient.get<BackendSearchResponse>(`/public/search?q=${encodeURIComponent(trimmed)}`);
+  const result = await apiClient.get<BackendSearchResponse>(`/public/search?q=${encodeURIComponent(trimmed)}${coords ? `&lat=${coords.latitude}&lng=${coords.longitude}` : ''}`);
   return {
     restaurants: result.restaurants.map(mapDirectoryRestaurant),
+    cuisines: (result.cuisines || []).map((cuisine) => ({ name: cuisine.name, restaurants: cuisine.restaurants.map(mapDirectoryRestaurant) })),
+    categories: (result.categories || []).map((category) => ({
+      id: category.id,
+      name: category.name,
+      imageUrl: resolveImageUrl(category.imageUrl),
+      restaurant: mapDirectoryRestaurant(category.restaurant),
+    })),
     menuItems: result.menuItems.map((item) => ({
       id: item.id,
       name: item.name,

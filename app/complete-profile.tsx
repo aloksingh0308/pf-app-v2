@@ -1,10 +1,12 @@
+import { dobToIso } from '@/utils/dateOfBirth';
+import DateOfBirthPicker from '@/components/DateOfBirthPicker';
 import AppButton from "@/components/common/AppButton";
 import { AppColors } from "@/constants/appColors";
 import { useAppLoader } from "@/hooks/useAppLoader";
-import Ionicons from '@react-native-vector-icons/ionicons';
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
 import { Keyboard, KeyboardAvoidingView, Platform, ScrollView, TouchableWithoutFeedback } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDispatch } from "react-redux";
 import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../services/alertService";
@@ -27,10 +29,7 @@ const validateDateOfBirth = (dob: string): boolean => {
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 };
 
-const getIsoDateFromDob = (dob: string): string => {
-  const [day, month, year] = dob.split('/').map(Number);
-  return new Date(year, month - 1, day).toISOString().split('T')[0];
-};
+const getIsoDateFromDob = dobToIso;
 
 // Firestore's setDoc/updateDoc reject `undefined` field values outright — since
 // dateOfBirth is optional here, strip any undefined keys before writing rather
@@ -47,6 +46,7 @@ const normalizePhoneForLookup = (phone: string): string => {
 };
 
 const CompleteProfileScreen = () => {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ uid?: string; phone?: string; email?: string }>();
   const uid = String(params.uid || '');
   const phoneNumber = normalizePhoneForLookup(String(params.phone || ''));
@@ -125,13 +125,16 @@ const CompleteProfileScreen = () => {
         throw new Error('Unable to complete profile setup. Please try again.');
       }
 
-      dispatch(setUser(userProfile));
       await storageService.saveUserProfile(userProfile);
-
       setLoadingState(false);
       dispatch(setLoading(false));
-      // The root layout's auth-state effect redirects to the app once
-      // Redux reflects an authenticated user — no explicit navigation here.
+
+      // Go to Home BEFORE marking the user signed in. Signing in re-mounts the root Stack
+      // (its key changes from "guest" to the user — see app/_layout.tsx), and a redirect
+      // fired during that re-mount is lost, leaving the new Stack on this screen. Navigating
+      // first means the re-mounted Stack starts on Home.
+      router.replace('/(tabs)' as never);
+      requestAnimationFrame(() => dispatch(setUser(userProfile)));
     } catch (error: any) {
       setLoadingState(false);
       dispatch(setLoading(false));
@@ -153,16 +156,9 @@ const CompleteProfileScreen = () => {
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, paddingHorizontal: 20, paddingTop: 80 }}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 40, flexGrow: 1, paddingHorizontal: 20, paddingTop: insets.top + 32 }}
           >
-            <HeaderContainer>
-              <BackButton onPress={handleCancel} disabled={loading}>
-                <Ionicons name="arrow-back" size={28} color="#282939" />
-              </BackButton>
-              <Title>Complete Your Profile</Title>
-              <PlaceholderButton disabled />
-            </HeaderContainer>
-
+            <Title accessibilityRole="header">Complete your profile</Title>
             <Subtitle>Just a few details to finish setting up your account.</Subtitle>
 
             <FieldInput
@@ -183,15 +179,7 @@ const CompleteProfileScreen = () => {
               editable={!loading}
             />
 
-            <FieldInput
-              placeholder="Date of Birth (DD/MM/YYYY, Optional)"
-              placeholderTextColor="#888"
-              keyboardType="numbers-and-punctuation"
-              value={dateOfBirth}
-              onChangeText={setDateOfBirth}
-              editable={!loading}
-              maxLength={10}
-            />
+            <DateOfBirthPicker value={dateOfBirth} onChange={setDateOfBirth} disabled={loading} />
 
             <FieldInput
               placeholder="Phone Number"
@@ -215,6 +203,10 @@ const CompleteProfileScreen = () => {
               loading={loading}
               style={{ minHeight: 50, marginTop: 8 }}
             />
+
+            <DifferentNumberButton accessibilityRole="button" onPress={handleCancel} disabled={loading}>
+              <DifferentNumberText>Not you? Use a different number</DifferentNumberText>
+            </DifferentNumberButton>
           </ScrollView>
         </KeyboardAvoidingView>
       </TouchableWithoutFeedback>
@@ -234,29 +226,28 @@ const Container = styled.ImageBackground.attrs({
   width: 100%;
 `;
 
-const HeaderContainer = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 30px;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const PlaceholderButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-`;
+
 
 const Title = styled.Text`
-  font-size: 22px;
-  font-weight: bold;
+  font-size: 26px;
+  font-weight: 800;
   color: ${AppColors.textPrimary};
+  text-align: center;
+  margin-bottom: 8px;
+`;
+
+const DifferentNumberButton = styled.TouchableOpacity`
+  margin-top: 18px;
+  align-self: center;
+  padding: 8px 12px;
+`;
+
+const DifferentNumberText = styled.Text`
+  color: ${AppColors.primary};
+  font-size: 14px;
+  font-weight: 700;
 `;
 
 const Subtitle = styled.Text`

@@ -1,9 +1,9 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppImage from '@/components/AppImage';
 import FloatingCartButton from '@/components/FloatingCartButton';
+import FoodTypeMark, { FOOD_TYPE_LABELS } from '@/components/common/FoodTypeMark';
 import { decrementQuantity, incrementQuantity } from '@/store/slices/cartSlice';
 import { AddonOption, ModifierGroup, Product, SelectedModifier } from '@/types/Product';
-import Ionicons from '@react-native-vector-icons/ionicons';
-import { useNavigation } from '@react-navigation/native';
 import { useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,7 +16,6 @@ import { getAddons, getModifiers } from '@/services/menuService';
 
 const ProductDetailScreen = () => {
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
   const dispatch = useDispatch();
   const { addItem } = useAddToCartWithRestaurantGuard();
   const { product } = useLocalSearchParams();
@@ -179,16 +178,18 @@ const ProductDetailScreen = () => {
   console.log('Image URI:', imageUri);
   return (
     <Screen>
+      <PageHeader title="Product Details" />
       <Container contentContainerStyle={{ paddingBottom: Math.max(140, insets.bottom + 110) }}>
-        <HeaderRow>
-          <BackButton onPress={() => navigation.goBack()}>
-            <Ionicons name="chevron-back" size={24} color="#282939" />
-          </BackButton>
-          <HeaderTitle>Product Details</HeaderTitle>
-        </HeaderRow>
+
 
         <ProductImage uri={imageUri} contentFit="cover" />
         <DetailsCard>
+          {parsedProduct.foodType ? (
+            <FoodTypeRow>
+              <FoodTypeMark foodType={parsedProduct.foodType} size={16} />
+              <FoodTypeLabel>{FOOD_TYPE_LABELS[parsedProduct.foodType]}</FoodTypeLabel>
+            </FoodTypeRow>
+          ) : null}
           <Title>{parsedProduct.name}</Title>
           {qtyAndServes ? <MetaText>{qtyAndServes}</MetaText> : null}
           {outOfStock ? <StockStatusText>Currently out of stock</StockStatusText> : null}
@@ -292,7 +293,7 @@ const ProductDetailScreen = () => {
 
 export default ProductDetailScreen;
 
-const Screen = styled.SafeAreaView`
+const Screen = styled(PageScreen)`
   flex: 1;
   background-color: #fff;
 `;
@@ -303,28 +304,8 @@ const Container = styled.ScrollView`
   background-color: #fff;
 `;
 
-const HeaderRow = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-`;
 
-const HeaderTitle = styled.Text`
-  flex: 1;
-  text-align: center;
-  margin-right: 40px;
-  font-size: 18px;
-  color: #1a1a1a;
-  font-weight: 700;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
 const ProductImage = styled(AppImage)`
   width: 100%;
@@ -492,4 +473,17 @@ const AddText = styled.Text<{ $disabled?: boolean }>`
   color: ${({ $disabled }) => ($disabled ? '#4b5563' : '#fff')};
   font-size: 18px;
   font-weight: 800;
+`;
+
+const FoodTypeRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 6px;
+`;
+
+const FoodTypeLabel = styled.Text`
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4b5563;
 `;

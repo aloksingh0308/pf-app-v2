@@ -1,5 +1,12 @@
-import { apiClient } from '../utils/apiClient';
-import { getActiveOrgSlug, getActiveBranchCode } from './restaurantContext';
+import { apiClient, isRateLimited } from '../utils/apiClient';
+import { startPolling } from '../utils/polling';
+import { getActiveOrgSlug, getActiveBranchCode, hasActiveRestaurant, onActiveRestaurantChanged } from './restaurantContext';
+
+// Background config checks — paused while the app is backgrounded and during a 429
+// cooldown (utils/polling.ts). None of these change often.
+const SERVICE_AVAILABILITY_POLL_MS = 60_000;
+const APP_STATUS_POLL_MS = 60_000;
+const ANNOUNCEMENT_POLL_MS = 5 * 60_000;
 
 export type AnnouncementStatus = 'active' | 'inactive';
 
@@ -81,22 +88,26 @@ export function subscribeToServiceAvailability(
   let cancelled = false;
 
   const fetchServiceAvailability = async () => {
+    // No restaurant picked yet → nothing restaurant-specific to check (all services open).
+    if (!hasActiveRestaurant()) {
+      if (!cancelled) callback(DEFAULT_SERVICE_AVAILABILITY_CONFIG);
+      return;
+    }
     try {
       const context = await apiClient.get<BranchContextResponse>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}`);
       if (cancelled) return;
       callback({ services: context.serviceAvailability || DEFAULT_SERVICE_AVAILABILITY_CONFIG.services });
     } catch (error) {
-      console.warn('Failed to fetch service availability config:', error);
+      if (!isRateLimited(error)) console.warn('Failed to fetch service availability config:', error);
       if (!cancelled) callback(DEFAULT_SERVICE_AVAILABILITY_CONFIG);
     }
   };
 
-  fetchServiceAvailability();
-  const interval = setInterval(fetchServiceAvailability, 30000);
+  const poller = startPolling(fetchServiceAvailability, SERVICE_AVAILABILITY_POLL_MS);
 
   return () => {
     cancelled = true;
-    clearInterval(interval);
+    poller.stop();
   };
 }
 
@@ -108,11 +119,10 @@ export type PricingConfig = {
   updatedAt?: unknown;
 };
 
+/** Delivery charges come only from the branch (set by its Owner/Manager in the SaaS panel);
+ *  a branch with no ranges charges ₹0, so the fallback has none either. */
 export const DEFAULT_PRICING_CONFIG: PricingConfig = {
-  deliveryFeeTiers: [
-    { belowAmount: 99, fee: 20 },
-    { belowAmount: 149, fee: 10 },
-  ],
+  deliveryFeeTiers: [],
   packagingCharge: 10,
 };
 
@@ -128,6 +138,11 @@ export function subscribeToAnnouncement(callback: (config: AnnouncementConfig | 
   let cancelled = false;
 
   const fetchAnnouncement = async () => {
+    // Announcements belong to a restaurant — none until the customer has picked one.
+    if (!hasActiveRestaurant()) {
+      if (!cancelled) callback(null);
+      return;
+    }
     try {
       const context = await apiClient.get<BranchContextResponse>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}`);
       if (cancelled) return;
@@ -144,17 +159,16 @@ export function subscribeToAnnouncement(callback: (config: AnnouncementConfig | 
         imageUrl: context.announcement.imageUrl || null,
       });
     } catch (error) {
-      console.warn('Failed to fetch announcement config:', error);
+      if (!isRateLimited(error)) console.warn('Failed to fetch announcement config:', error);
       if (!cancelled) callback(null);
     }
   };
 
-  fetchAnnouncement();
-  const interval = setInterval(fetchAnnouncement, 60000);
+  const poller = startPolling(fetchAnnouncement, ANNOUNCEMENT_POLL_MS);
 
   return () => {
     cancelled = true;
-    clearInterval(interval);
+    poller.stop();
   };
 }
 
@@ -189,35 +203,66 @@ export function subscribeToAppStatus(callback: (config: AppStatusConfig) => void
   let cancelled = false;
 
   const fetchAppStatus = async () => {
+    // The status belongs to the restaurant being ordered from. Before one is picked, the
+    // build-time default restaurant must not decide whether the whole app is open (it may
+    // not even exist on this server — "Restaurant not found").
+    if (!hasActiveRestaurant()) {
+      if (!cancelled) callback(DEFAULT_APP_STATUS_CONFIG);
+      return;
+    }
     try {
       const res = await apiClient.get<BranchStatusResponse>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/status`);
       if (cancelled) return;
       callback(mapBranchStatusToAppStatus(res));
     } catch (error) {
-      console.warn('Failed to fetch app status config:', error);
+      if (!isRateLimited(error)) console.warn('Failed to fetch app status config:', error);
       if (!cancelled) callback(DEFAULT_APP_STATUS_CONFIG);
     }
   };
 
-  fetchAppStatus();
-  const interval = setInterval(fetchAppStatus, 30000);
+  const poller = startPolling(fetchAppStatus, APP_STATUS_POLL_MS);
+  // Switching restaurants re-checks right away, so a restaurant's page never shows the
+  // previous restaurant's paused/closed state until the next poll.
+  const stopListening = onActiveRestaurantChanged(() => void fetchAppStatus());
 
   return () => {
     cancelled = true;
-    clearInterval(interval);
+    poller.stop();
+    stopListening();
   };
 }
+
+/** One-off status check of the restaurant being ordered from — checkout calls this right
+ *  before placing an order (never throws; a failed check doesn't block the order, the
+ *  backend still refuses a paused branch). */
+export async function getActiveRestaurantStatus(): Promise<AppStatusConfig> {
+  if (!hasActiveRestaurant()) return DEFAULT_APP_STATUS_CONFIG;
+  try {
+    const res = await apiClient.get<BranchStatusResponse>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/status`);
+    return mapBranchStatusToAppStatus(res);
+  } catch {
+    return DEFAULT_APP_STATUS_CONFIG;
+  }
+}
+
+/** Paused or closed restaurant: it can't take orders, but the rest of the app keeps working. */
+export const isRestaurantUnavailable = (status: AppStatus) => status === 'temporarily_paused' || status === 'emergency_closed';
 
 /**
  * Fetches the checkout pricing config once (no live listener — checkout only needs the
  * value at the time the screen is opened). Replaces the Firestore `app_config/pricing`
- * doc — see Organization.pricingConfig, read via the branch-context endpoint. Falls back to
+ * doc — read via the branch-context endpoint: `deliveryFeeTiers` are the selected branch's
+ * own delivery charge ranges (empty = ₹0 delivery), packaging is organization-wide. Falls back to
  * `DEFAULT_PRICING_CONFIG` on any request failure (never throws).
  */
 export async function getPricingConfig(): Promise<PricingConfig> {
   try {
     const context = await apiClient.get<BranchContextResponse>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}`);
-    return context.pricingConfig || DEFAULT_PRICING_CONFIG;
+    return {
+      ...DEFAULT_PRICING_CONFIG,
+      ...context.pricingConfig,
+      deliveryFeeTiers: context.pricingConfig?.deliveryFeeTiers ?? [],
+    };
   } catch (error) {
     console.warn('Failed to fetch pricing config:', error);
     return DEFAULT_PRICING_CONFIG;

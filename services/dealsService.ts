@@ -1,6 +1,7 @@
 import { buildCartItemFromProduct } from '@/utils/productVariants';
 import { getMenuItemsByFirebaseIds } from './menuService';
 import { DealItemRef, DealMenu, DealMenuView } from '@/types/Deal';
+import type { FoodType } from '@/types/Product';
 import { apiClient } from '../utils/apiClient';
 import { getActiveOrgSlug, getActiveBranchCode, onActiveRestaurantChanged } from './restaurantContext';
 
@@ -45,7 +46,7 @@ const toTimestampMs = (value: unknown): number | null => {
   return Number.isFinite(millis) ? millis : null;
 };
 
-interface BackendDeal {
+export interface BackendDeal {
   _id: string;
   name: string;
   description?: string;
@@ -53,7 +54,7 @@ interface BackendDeal {
   price: number;
   originalPrice: number;
   savedAmount: number;
-  items: Array<{ menuItemId: string; quantity: number }>;
+  items: Array<{ menuItemId: string; quantity: number; name?: string; foodType?: FoodType }>;
 }
 
 /** Maps the restaurant-saas-platform's Combo-backed `/deals` endpoint into the same
@@ -62,7 +63,7 @@ interface BackendDeal {
  *  those fields get permissive defaults (always active, always shown on Home) rather than
  *  being dropped, so every existing screen reading `deal.schedule`/`deal.visibility`
  *  keeps working unmodified. */
-const mapBackendDeal = (deal: BackendDeal): DealMenu => ({
+export const mapBackendDeal = (deal: BackendDeal): DealMenu => ({
   firebaseId: deal._id,
   name: deal.name,
   image: deal.imageUrl || undefined,
@@ -292,6 +293,7 @@ export const buildCartItemsForDeal = async (deal: DealMenuView): Promise<Record<
       ...row.cartItem,
       price: Number(unitPrice.toFixed(4)),
       quantity: row.quantity,
+      dealUnitQty: row.quantity,
       isDeal: true,
       dealId: deal.firebaseId,
       dealName: deal.name,

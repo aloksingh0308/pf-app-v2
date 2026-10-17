@@ -8,6 +8,7 @@ import 'react-native-reanimated';
 
 import AppAlertProvider from '@/components/AppAlertProvider';
 import AppStatusProvider from '@/components/AppStatusProvider';
+import ConnectivityGate from '@/components/ConnectivityGate';
 import GlobalLoader from '@/components/GlobalLoader';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import { authService } from '@/services/authService';
@@ -30,6 +31,10 @@ function RootLayoutContent() {
   const [isFontLoadTimedOut, setIsFontLoadTimedOut] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [isSplashDelayDone, setIsSplashDelayDone] = useState(false);
+  // A verified phone session whose profile has no name yet (brand-new customer, or the app
+  // was closed mid sign-up). Such a user is NOT signed in yet — they're sent to
+  // /complete-profile, which signs them in once the profile is saved.
+  const [incompleteSession, setIncompleteSession] = useState<{ uid: string; phone: string; email: string } | null>(null);
   const pushTokenSyncedForUidRef = useRef<string | null>(null);
   const dispatch = useDispatch<AppDispatch>();
   const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
@@ -126,11 +131,23 @@ function RootLayoutContent() {
       try {
         const cachedProfile = await storageService.getUserProfile();
 
-        unsubscribe = authService.onAuthStateChange(async (firebaseUser) => {
+        unsubscribe = authService.onAuthStateChange(async (sessionUser) => {
           try {
-            if (firebaseUser) {
-              const userProfile = await userService.getUserProfile(firebaseUser.uid, firebaseUser.email);
-              if (userProfile) {
+            if (sessionUser) {
+              const userProfile = await userService.getUserProfile(sessionUser.uid, sessionUser.email);
+              const profileIncomplete = Boolean(userProfile && !userProfile.isDisabled && !String(userProfile.name || '').trim());
+              setIncompleteSession(
+                profileIncomplete
+                  ? {
+                      uid: sessionUser.uid,
+                      phone: String(sessionUser.phoneNumber || '').replace(/\D/g, '').slice(-10),
+                      email: String(sessionUser.email || '').trim().toLowerCase(),
+                    }
+                  : null
+              );
+              if (profileIncomplete) {
+                dispatch(logout());
+              } else if (userProfile) {
                 if (userProfile.isDisabled) {
                   await authService.logoutUser();
                   await storageService.clearUserData();
@@ -139,19 +156,20 @@ function RootLayoutContent() {
                   dispatch(setUser(userProfile));
                   await storageService.saveUserProfile(userProfile);
                 }
-              } else if (cachedProfile && cachedProfile.uid === firebaseUser.uid && !cachedProfile.isDisabled) {
+              } else if (cachedProfile && cachedProfile.uid === sessionUser.uid && !cachedProfile.isDisabled) {
                 dispatch(setUser(cachedProfile));
               } else {
                 await storageService.clearUserData();
                 dispatch(logout());
               }
             } else {
+              setIncompleteSession(null);
               await storageService.clearUserData();
               dispatch(logout());
             }
           } catch (error) {
             console.log('Error resolving auth state:', error);
-            if (firebaseUser && cachedProfile && cachedProfile.uid === firebaseUser.uid && !cachedProfile.isDisabled) {
+            if (sessionUser && cachedProfile && cachedProfile.uid === sessionUser.uid && !cachedProfile.isDisabled) {
               dispatch(setUser(cachedProfile));
             } else {
               dispatch(logout());
@@ -270,10 +288,12 @@ function RootLayoutContent() {
         }
 
         router.replace('/(tabs)' as never);
+      } else if (incompleteSession) {
+        // Verified phone, no name yet — finish sign-up (see incompleteSession above).
+        if (pathnameRef.current !== '/complete-profile') {
+          router.replace({ pathname: '/complete-profile', params: incompleteSession } as never);
+        }
       } else if (pathnameRef.current !== '/complete-profile') {
-        // A verified phone-auth user with no Firestore profile yet lands here
-        // with isAuthenticated=false (see the onAuthStateChange handler below)
-        // while they fill in their profile — don't bounce them to /login.
         router.replace('/login');
       }
     }
@@ -281,7 +301,7 @@ function RootLayoutContent() {
     // must only fire on auth-state changes, not on every navigation, or an
     // authenticated user gets force-redirected to the home tab on every route
     // change (e.g. Edit Profile bouncing straight back to Home).
-  }, [dispatch, isAuthenticated, isCheckingAuth, isSplashDelayDone, user?.role, user?.uid]);
+  }, [dispatch, incompleteSession, isAuthenticated, isCheckingAuth, isSplashDelayDone, user?.role, user?.uid]);
 
   if (!isAppShellReady) {
     return <SplashScreen />;
@@ -300,16 +320,18 @@ function RootLayoutContent() {
             <Stack.Screen name="login" />
             <Stack.Screen name="complete-profile" />
             <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="order-success" />
+            {/* No swipe-back to checkout after placing an order; back goes Home (see order-success). */}
+            <Stack.Screen name="order-success" options={{ gestureEnabled: false }} />
             <Stack.Screen name="user/cart" />
             <Stack.Screen name="user/checkout" />
             <Stack.Screen name="user/deals" />
             <Stack.Screen name="user/edit-profile" />
             <Stack.Screen name="user/location-detials" />
-            <Stack.Screen name="user/order-success" />
+            <Stack.Screen name="user/order-success" options={{ gestureEnabled: false }} />
             <Stack.Screen name="user/privacy-policy" />
             <Stack.Screen name="user/product-details" />
             <Stack.Screen name="user/profile" />
+            <Stack.Screen name="user/refer-earn" />
             <Stack.Screen name="user/rewards" />
             <Stack.Screen name="user/restaurant-details" />
             <Stack.Screen name="user/support" />
@@ -321,6 +343,8 @@ function RootLayoutContent() {
           </Stack>
         </AppAlertProvider>
       <GlobalLoader />
+      {/* Full-screen "no internet / can't reach server" fallback over everything. */}
+      <ConnectivityGate />
     </AppStatusProvider>
   );
 }

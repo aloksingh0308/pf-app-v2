@@ -14,7 +14,10 @@ export function useAppStatus(): AppStatusConfig {
   return useContext(AppStatusContext);
 }
 
-const BLOCKING_STATUSES: AppStatus[] = ['temporarily_paused', 'emergency_closed', 'maintenance'];
+/** Only a platform-wide state may take over the whole app. A paused or closed restaurant is
+ *  one restaurant in a multi-restaurant app — its own screens show that (see
+ *  RestaurantPausedBanner) while customers keep browsing and ordering elsewhere. */
+const BLOCKING_STATUSES: AppStatus[] = ['maintenance'];
 
 function isBlockingStatus(status: AppStatus): status is BlockingAppStatus {
   return BLOCKING_STATUSES.includes(status);

@@ -29,8 +29,6 @@ export function RestaurantCard({
 }) {
   const image = restaurant.coverImage || restaurant.image || FALLBACK_CAFE_IMAGE;
   const subtitle = String(restaurant.cuisine || restaurant.desc || '').trim();
-  const openingHours = String(restaurant.openingHours || '').trim();
-  const phone = String(restaurant.phone || '').trim();
   const distanceLabel = formatDistance(restaurant.distanceKm);
   const etaLabel = formatEta(restaurant.eta);
 
@@ -38,13 +36,11 @@ export function RestaurantCard({
     <ExploreCafeCard>
       <ExploreCafeImageWrap>
         <AppImage uri={image} fallbackUri={FALLBACK_CAFE_IMAGE} style={{ width: '100%', height: '100%' }} />
-        <ExploreCafeVerifiedBadge>
-          <Ionicons name="checkmark-circle" size={moderateScale(14)} color="#fff" />
-        </ExploreCafeVerifiedBadge>
+
       </ExploreCafeImageWrap>
       <ExploreCafeContent>
         <ExploreCafeTitleRow>
-          <ExploreCafeTitle numberOfLines={1}>{restaurant.name || 'Restaurant'}</ExploreCafeTitle>
+          <ExploreCafeTitle numberOfLines={2}>{restaurant.name || 'Restaurant'}</ExploreCafeTitle>
           {restaurant.isSponsored ? (
             <RankingBadge $variant="sponsored">
               <RankingBadgeText $variant="sponsored">Sponsored</RankingBadgeText>
@@ -69,25 +65,13 @@ export function RestaurantCard({
               <ExploreCafeInfoText numberOfLines={1}>{distanceLabel}</ExploreCafeInfoText>
             </ExploreCafeInfoChip>
           ) : null}
-          {openingHours ? (
-            <ExploreCafeInfoChip>
-              <Ionicons name="time-outline" size={moderateScale(12)} color="#5f5f5f" />
-              <ExploreCafeInfoText numberOfLines={1}>{openingHours}</ExploreCafeInfoText>
-            </ExploreCafeInfoChip>
-          ) : null}
-          {phone ? (
-            <ExploreCafeInfoChip>
-              <Ionicons name="call-outline" size={moderateScale(12)} color="#5f5f5f" />
-              <ExploreCafeInfoText numberOfLines={1}>{phone}</ExploreCafeInfoText>
-            </ExploreCafeInfoChip>
-          ) : null}
         </ExploreCafeInfoRow>
         <ExploreCafeActions>
           <ExplorePrimaryButton activeOpacity={0.88} onPress={onViewMenu}>
-            <ExplorePrimaryText>View Full Menu</ExplorePrimaryText>
+            <ExplorePrimaryText>View Menu</ExplorePrimaryText>
           </ExplorePrimaryButton>
           <ExploreSecondaryButton activeOpacity={0.88} onPress={onViewDetails}>
-            <Ionicons name="information-circle-outline" size={moderateScale(14)} color="#f68712" style={{ marginRight: moderateScale(5) }} />
+            <Ionicons name="information-circle-outline" size={moderateScale(14)} color="#ff6b00" style={{ marginRight: moderateScale(5) }} />
             <ExploreSecondaryText>Details</ExploreSecondaryText>
           </ExploreSecondaryButton>
         </ExploreCafeActions>
@@ -101,36 +85,36 @@ export function RestaurantCard({
 export function RestaurantMiniCard({
   restaurant,
   badge,
+  actionLabel,
   onPress,
 }: {
   restaurant: RestaurantRecord;
   badge?: RestaurantCardBadge;
+  actionLabel?: string;
   onPress: () => void;
 }) {
   const image = restaurant.coverImage || restaurant.image || FALLBACK_CAFE_IMAGE;
   const subtitle = String(restaurant.cuisine || restaurant.desc || '').trim();
   const distanceLabel = formatDistance(restaurant.distanceKm);
   const etaLabel = formatEta(restaurant.eta);
-  const metaLine = [etaLabel, distanceLabel].filter(Boolean).join(' · ');
   const badgeVariant = badge === 'Sponsored' ? 'sponsored' : badge === 'Offer' ? 'offer' : 'new';
 
   return (
-    <Pressable onPress={onPress}>
-      <MiniCard>
-        <MiniCardImageWrap>
+    <Pressable style={{ flexShrink: 0, alignSelf: 'flex-start' }} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${actionLabel || 'View menu for'} ${restaurant.name || 'restaurant'}`}>
+      <MiniCard collapsable={false}>
+        <MiniCardImageWrap collapsable={false}>
           <AppImage uri={image} fallbackUri={FALLBACK_CAFE_IMAGE} style={{ width: '100%', height: '100%' }} />
+          {badge ? <RankingBadge style={{ position: 'absolute', top: 8, left: 0 }} $variant={badgeVariant}><RankingBadgeText $variant={badgeVariant}>{badge}</RankingBadgeText></RankingBadge> : null}
         </MiniCardImageWrap>
-        <MiniCardContent>
-          <MiniCardTitleRow>
-            <MiniCardTitle numberOfLines={1}>{restaurant.name || 'Restaurant'}</MiniCardTitle>
-            {badge ? (
-              <RankingBadge $variant={badgeVariant}>
-                <RankingBadgeText $variant={badgeVariant}>{badge}</RankingBadgeText>
-              </RankingBadge>
-            ) : null}
-          </MiniCardTitleRow>
+        <MiniCardContent collapsable={false}>
+          <MiniCardTitle numberOfLines={1}>{restaurant.name || 'Restaurant'}</MiniCardTitle>
           {subtitle ? <MiniCardSubtitle numberOfLines={1}>{subtitle}</MiniCardSubtitle> : null}
-          {metaLine ? <MiniCardMeta numberOfLines={1}>{metaLine}</MiniCardMeta> : null}
+          <MiniCardTitleRow style={{ marginTop: 5, gap: 5 }}>
+            {Number(restaurant.rating) > 0 ? <><Ionicons name="star" size={13} color="#ffad00" /><MiniCardMeta>{Number(restaurant.rating).toFixed(1)}</MiniCardMeta></> : null}
+            {etaLabel ? <><Ionicons name="time-outline" size={12} color="#888" /><MiniCardMeta>{etaLabel}</MiniCardMeta></> : null}
+            {distanceLabel ? <><Ionicons name="location-outline" size={12} color="#888" /><MiniCardMeta>{distanceLabel}</MiniCardMeta></> : null}
+          </MiniCardTitleRow>
+          {actionLabel ? <MiniCardAction><ExplorePrimaryText>{actionLabel}</ExplorePrimaryText></MiniCardAction> : null}
         </MiniCardContent>
       </MiniCard>
     </Pressable>
@@ -138,44 +122,41 @@ export function RestaurantMiniCard({
 }
 
 const ExploreCafeCard = styled.View`
-  border-radius: ${moderateScale(18)}px;
-  overflow: hidden;
+  flex-direction: row;
+  border-radius: 16px;
+  padding: 10px;
   background-color: #fff;
-  margin-bottom: ${moderateVerticalScale(16)}px;
-  shadow-color: #000;
-  shadow-opacity: 0.06;
-  shadow-radius: 10px;
-  shadow-offset: 0px 4px;
-  elevation: 2;
+  border-width: 1px;
+  border-color: #f0e8e0;
+  margin-bottom: 12px;
+  shadow-color: #60452f;
+  shadow-opacity: 0.04;
+  shadow-radius: 6px;
+  shadow-offset: 0px 2px;
+  elevation: 1;
 `;
 
 const ExploreCafeImageWrap = styled.View`
-  width: 100%;
-  height: ${moderateVerticalScale(150)}px;
+  width: ${moderateScale(92)}px;
+  height: ${moderateScale(112)}px;
+  border-radius: 11px;
+  overflow: hidden;
   background-color: #f2f2f2;
 `;
 
-const ExploreCafeVerifiedBadge = styled.View`
-  position: absolute;
-  top: ${moderateScale(10)}px;
-  right: ${moderateScale(10)}px;
-  background-color: rgba(0, 0, 0, 0.45);
-  border-radius: ${moderateScale(12)}px;
-  padding: ${moderateScale(4)}px;
-`;
-
 const ExploreCafeContent = styled.View`
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(14)}px ${moderateVerticalScale(14)}px;
+  flex: 1;
+  padding-left: 12px;
 `;
 
 const ExploreCafeTitleRow = styled.View`
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;
 `;
 
 const ExploreCafeTitle = styled.Text`
   color: #1f1f1f;
-  font-size: ${scaleFont(17)}px;
+  font-size: ${scaleFont(14)}px;
   font-weight: 800;
   flex-shrink: 1;
 `;
@@ -200,9 +181,9 @@ const RankingBadgeText = styled.Text<{ $variant: BadgeVariant }>`
 `;
 
 const ExploreCafeSubtitle = styled.Text`
-  margin-top: ${moderateVerticalScale(2)}px;
-  color: #f68712;
-  font-size: ${scaleFont(13)}px;
+  margin-top: 4px;
+  color: #80746a;
+  font-size: ${scaleFont(11)}px;
   font-weight: 600;
 `;
 
@@ -215,29 +196,30 @@ const ExploreCafeInfoRow = styled.View`
 const ExploreCafeInfoChip = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-right: ${moderateScale(14)}px;
+  margin-right: 10px;
   margin-bottom: ${moderateVerticalScale(2)}px;
 `;
 
 const ExploreCafeInfoText = styled.Text`
   margin-left: ${moderateScale(5)}px;
   color: #5f5f5f;
-  font-size: ${scaleFont(12)}px;
-  font-weight: 600;
+  font-size: ${scaleFont(11)}px;
+  font-weight: 500;
 `;
 
 const ExploreCafeActions = styled.View`
   flex-direction: row;
-  margin-top: ${moderateVerticalScale(12)}px;
+  margin-top: 8px;
 `;
 
 const ExplorePrimaryButton = styled.TouchableOpacity`
   flex: 1;
   border-radius: ${moderateScale(8)}px;
-  background-color: #f68712;
+  background-color: #ff6b00;
   align-items: center;
   justify-content: center;
-  padding: ${moderateVerticalScale(9)}px 0;
+  min-height: 40px;
+  padding: 6px 0;
 `;
 
 const ExplorePrimaryText = styled.Text`
@@ -249,26 +231,26 @@ const ExplorePrimaryText = styled.Text`
 const ExploreSecondaryButton = styled.TouchableOpacity`
   flex: 1;
   border-radius: ${moderateScale(8)}px;
-  border-width: 1px;
-  border-color: #f68712;
+  background-color: #fff3e8;
   margin-left: ${moderateScale(8)}px;
   align-items: center;
   justify-content: center;
   flex-direction: row;
-  padding: ${moderateVerticalScale(9)}px 0;
+  min-height: 40px;
+  padding: 6px 0;
 `;
 
 const ExploreSecondaryText = styled.Text`
-  color: #f68712;
+  color: #ff6b00;
   font-size: ${scaleFont(12)}px;
   font-weight: 800;
 `;
 
 const MiniCard = styled.View`
-  width: ${moderateScale(224)}px;
+  width: ${moderateScale(218)}px;
   margin-right: ${moderateScale(12)}px;
   border-width: 1px;
-  border-color: #ececec;
+  border-color: #f1e9e2;
   border-radius: ${moderateScale(14)}px;
   overflow: hidden;
   background-color: #fff;
@@ -298,7 +280,7 @@ const MiniCardTitle = styled.Text`
 
 const MiniCardSubtitle = styled.Text`
   margin-top: ${moderateVerticalScale(3)}px;
-  color: #f68712;
+  color: #777;
   font-size: ${scaleFont(11)}px;
   font-weight: 600;
 `;
@@ -309,3 +291,5 @@ const MiniCardMeta = styled.Text`
   font-size: ${scaleFont(11)}px;
   font-weight: 600;
 `;
+
+const MiniCardAction = styled.View`margin-top: 10px; padding: 9px; background-color: #ff6b00; border-radius: 8px; align-items: center;`;

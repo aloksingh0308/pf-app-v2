@@ -1,6 +1,7 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { useIsFocused } from '@react-navigation/native';
-import { router, useNavigation } from "expo-router";
+import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, View } from 'react-native';
 import Animated, {
@@ -62,8 +63,13 @@ const AnimatedTableCell = memo(function AnimatedTableCell({
   // 100% reproducible on this exact screen transition. The press-feedback scale animation
   // below is untouched (user-triggered, not a mount/unmount race).
   return (
-    <Animated.View style={animatedStyle}>
+    // Exactly a third of the row with the gutter inside the wrapper (TableGrid cancels the
+    // outer gutter with a negative margin) — cells always span the full width, 3 per row.
+    <Animated.View style={[{ width: '33.333%', paddingHorizontal: 5, marginBottom: 10 }, animatedStyle]}>
       <TableCell
+        accessibilityRole="radio"
+        accessibilityLabel={`${item.label}, ${item.occupied ? 'reserved' : selected ? 'selected' : 'available'}`}
+        accessibilityState={{ selected, disabled: item.occupied }}
         $selected={selected}
         $reserved={item.occupied}
         disabled={item.occupied}
@@ -85,7 +91,7 @@ const AnimatedTableCell = memo(function AnimatedTableCell({
           {item.label}
         </TableLabel>
         <TableStatus $reserved={item.occupied}>
-          {item.occupied ? 'Reserved' : 'Available'}
+          {item.occupied ? 'Reserved' : selected ? 'Selected' : 'Available'}
         </TableStatus>
       </TableCell>
     </Animated.View>
@@ -106,7 +112,8 @@ const DineInTableSection = memo(function DineInTableSection({
   return (
     <View>
       <Section>
-        <SectionHeader>Select Table</SectionHeader>
+        <SectionHeader>Choose your table</SectionHeader>
+        <SectionSubtitle>Select the table where you’re seated.</SectionSubtitle>
         {showSkeleton ? (
           <TableSkeletonGrid>
             {Array.from({ length: 8 }).map((_, i) => (
@@ -115,6 +122,7 @@ const DineInTableSection = memo(function DineInTableSection({
           </TableSkeletonGrid>
         ) : (
           <TableGrid>
+            {tableData.length === 0 && <SectionSubtitle>No tables available yet. Please ask our staff for help.</SectionSubtitle>}
             {tableData.map((item, index) => (
               <AnimatedTableCell
                 key={item.value}
@@ -167,7 +175,7 @@ const HomeDeliveryAddressSection = memo(function HomeDeliveryAddressSection({
     <View>
       <ContentContainer>
         <SavedAddressesHeaderRow>
-          <SectionTitle>Saved Addresses</SectionTitle>
+          <SectionTitle>Deliver to</SectionTitle>
           <AddNewAddressInlineButton onPress={onOpenAddNewAddress} activeOpacity={0.8}>
             <AddNewAddressInlineText>Add New</AddNewAddressInlineText>
           </AddNewAddressInlineButton>
@@ -184,11 +192,13 @@ const HomeDeliveryAddressSection = memo(function HomeDeliveryAddressSection({
               <SavedAddressCard
                 activeOpacity={0.7}
                 $selected={selectedAddressId === address.id}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: selectedAddressId === address.id }}
                 onPress={() => onSelectSavedAddress(address)}
               >
                 <SavedAddressTopRow>
                   <SavedHeaderGroup>
-                    <SavedAddressLabel>{address.label || 'Saved Address'}</SavedAddressLabel>
+                    <SavedAddressLabel>{selectedAddressId === address.id ? '✓ ' : ''}{address.label || 'Saved Address'}</SavedAddressLabel>
                     {address.isDefault ? <DefaultBadgeText>Default</DefaultBadgeText> : null}
                   </SavedHeaderGroup>
                   <SavedActionsRow>
@@ -244,7 +254,6 @@ const OrderTypeLocationScreen = () => {
   const tableNumberRef = useRef('');
   const hasLoadedTablesRef = useRef(false);
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
   const isFocused = useIsFocused();
   const dispatch = useDispatch<AppDispatch>();
   const authUser = useSelector((state: RootState) => state.auth.user);
@@ -278,22 +287,10 @@ const OrderTypeLocationScreen = () => {
     homeDelivery: { available: true, message: '' },
   });
   // ── Mount animations ───────────────────────────────────────────────────────
-  const headerOpacity = useSharedValue(0);
-  const headerY = useSharedValue(-28);
   const btnScale = useSharedValue(1);
-  const headerAnimStyle = useAnimatedStyle(() => ({
-    opacity: headerOpacity.value,
-    transform: [{ translateY: headerY.value }],
-  }));
   const btnAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: btnScale.value }],
   }));
-
-  // Header slides in on mount
-  useEffect(() => {
-    headerOpacity.value = withSpring(1, { damping: 20, stiffness: 140 });
-    headerY.value = withSpring(0, { damping: 18, stiffness: 120 });
-  }, []);
 
   // ── End animations ────────────────────────────────────────────────────────
 
@@ -494,12 +491,6 @@ const OrderTypeLocationScreen = () => {
   const canTakeAway = isNearCafe !== false && serviceAvailability.takeaway.available;
   const canHomeDelivery = serviceAvailability.homeDelivery.available;
   const anyServiceAvailable = canDineIn || canTakeAway || canHomeDelivery;
-
-  const DEFAULT_UNAVAILABLE_MESSAGE_BY_TYPE: Record<string, string> = {
-    dineIn: 'Dine-in is currently unavailable.',
-    takeaway: 'Take-away is currently unavailable.',
-    homeDelivery: 'Home delivery is currently unavailable.',
-  };
 
   // If the currently selected order type has just become unavailable (an admin disabled
   // it, or geography ruled it out), switch to the next available one instead of leaving
@@ -927,14 +918,7 @@ const OrderTypeLocationScreen = () => {
 
   return (
     <Container>
-      <Animated.View style={headerAnimStyle}>
-        <HeaderContainer>
-          <BackButton onPress={() => navigation.goBack()}>
-            <Ionicons name="arrow-back" size={28} color="#282939" />
-          </BackButton>
-          <Title>Delivery Details</Title>
-        </HeaderContainer>
-      </Animated.View>
+      <PageHeader title="Delivery Details" />
 
       <>
         <ScrollView
@@ -942,17 +926,23 @@ const OrderTypeLocationScreen = () => {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
+          <JourneyHeader>
+            <JourneyStep>STEP 1 OF 2 · DELIVERY DETAILS</JourneyStep>
+            <JourneyTitle>How would you like your order?</JourneyTitle>
+            <SectionSubtitle>A table for you, a quick pickup, or your doorstep.</SectionSubtitle>
+          </JourneyHeader>
           {/* Order Type Section */}
           <Section>
-            <SectionHeader>Order Type</SectionHeader>
+            <SectionHeader>Order type</SectionHeader>
             {anyServiceAvailable ? (
               <OrderTypeCardRow>
-                {isNearCafe !== false && (
+                {/* A service the restaurant has turned off is simply not offered — no greyed-out card. */}
+                {canDineIn && (
                   <OrderTypeCard
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: orderType === OrderType.DINE_IN }}
                     $selected={orderType === OrderType.DINE_IN}
-                    disabled={!canDineIn}
-                    style={!canDineIn ? { opacity: 0.55 } : undefined}
-                    onPress={() => canDineIn && handleSelectOrderType(OrderType.DINE_IN)}
+                    onPress={() => handleSelectOrderType(OrderType.DINE_IN)}
                   >
                     <OrderTypeIconBox $color="#f68712">
                       <Ionicons name="restaurant" size={24} color="#f68712" />
@@ -960,28 +950,20 @@ const OrderTypeLocationScreen = () => {
                     <OrderTypeContent>
                       <OrderTypeTitleRow>
                         <OrderTypeTitle $selected={orderType === OrderType.DINE_IN}>Dine In</OrderTypeTitle>
-                        {orderType === OrderType.DINE_IN && canDineIn && <OrderTypeSelectedBadge>Selected</OrderTypeSelectedBadge>}
-                        {!canDineIn && <OrderTypeUnavailableBadge>Unavailable</OrderTypeUnavailableBadge>}
                       </OrderTypeTitleRow>
-                      <OrderTypeDesc>
-                        {canDineIn
-                          ? 'Enjoy your food at our cafe'
-                          : (serviceAvailability.dineIn.message || DEFAULT_UNAVAILABLE_MESSAGE_BY_TYPE.dineIn)}
-                      </OrderTypeDesc>
+                      <OrderTypeDesc>Enjoy your food at our cafe</OrderTypeDesc>
                     </OrderTypeContent>
-                    {canDineIn && (
-                      <OrderTypeRadio $selected={orderType === OrderType.DINE_IN}>
-                        {orderType === OrderType.DINE_IN && <OrderTypeRadioDot />}
-                      </OrderTypeRadio>
-                    )}
+                    <OrderTypeRadio $selected={orderType === OrderType.DINE_IN}>
+                      {orderType === OrderType.DINE_IN && <OrderTypeRadioDot />}
+                    </OrderTypeRadio>
                   </OrderTypeCard>
                 )}
-                {isNearCafe !== false && (
+                {canTakeAway && (
                   <OrderTypeCard
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: orderType === OrderType.TAKE_AWAY }}
                     $selected={orderType === OrderType.TAKE_AWAY}
-                    disabled={!canTakeAway}
-                    style={!canTakeAway ? { opacity: 0.55 } : undefined}
-                    onPress={() => canTakeAway && handleSelectOrderType(OrderType.TAKE_AWAY)}
+                    onPress={() => handleSelectOrderType(OrderType.TAKE_AWAY)}
                   >
                     <OrderTypeIconBox $color="#43b02a">
                       <Ionicons name="bag" size={24} color="#43b02a" />
@@ -989,49 +971,35 @@ const OrderTypeLocationScreen = () => {
                     <OrderTypeContent>
                       <OrderTypeTitleRow>
                         <OrderTypeTitle $selected={orderType === OrderType.TAKE_AWAY}>Take-Away</OrderTypeTitle>
-                        {orderType === OrderType.TAKE_AWAY && canTakeAway && <OrderTypeSelectedBadge>Selected</OrderTypeSelectedBadge>}
-                        {!canTakeAway && <OrderTypeUnavailableBadge>Unavailable</OrderTypeUnavailableBadge>}
                       </OrderTypeTitleRow>
-                      <OrderTypeDesc>
-                        {canTakeAway
-                          ? 'Pick up your order from the cafe'
-                          : (serviceAvailability.takeaway.message || DEFAULT_UNAVAILABLE_MESSAGE_BY_TYPE.takeaway)}
-                      </OrderTypeDesc>
+                      <OrderTypeDesc>Pick up your order from the cafe</OrderTypeDesc>
                     </OrderTypeContent>
-                    {canTakeAway && (
-                      <OrderTypeRadio $selected={orderType === OrderType.TAKE_AWAY}>
-                        {orderType === OrderType.TAKE_AWAY && <OrderTypeRadioDot />}
-                      </OrderTypeRadio>
-                    )}
+                    <OrderTypeRadio $selected={orderType === OrderType.TAKE_AWAY}>
+                      {orderType === OrderType.TAKE_AWAY && <OrderTypeRadioDot />}
+                    </OrderTypeRadio>
                   </OrderTypeCard>
                 )}
-                <OrderTypeCard
-                  $selected={orderType === OrderType.HOME_DELIVERY}
-                  disabled={!canHomeDelivery}
-                  style={!canHomeDelivery ? { opacity: 0.55 } : undefined}
-                  onPress={() => canHomeDelivery && handleSelectOrderType(OrderType.HOME_DELIVERY)}
-                >
-                  <OrderTypeIconBox $color="#7c3aed">
-                    <Ionicons name="car" size={28} color="#7c3aed" />
-                  </OrderTypeIconBox>
-                  <OrderTypeContent>
-                    <OrderTypeTitleRow>
-                      <OrderTypeTitle $selected={orderType === OrderType.HOME_DELIVERY}>Home Delivery</OrderTypeTitle>
-                      {orderType === OrderType.HOME_DELIVERY && canHomeDelivery && <OrderTypeSelectedBadge>Selected</OrderTypeSelectedBadge>}
-                      {!canHomeDelivery && <OrderTypeUnavailableBadge>Unavailable</OrderTypeUnavailableBadge>}
-                    </OrderTypeTitleRow>
-                    <OrderTypeDesc>
-                      {canHomeDelivery
-                        ? 'We’ll deliver it to your doorstep'
-                        : (serviceAvailability.homeDelivery.message || DEFAULT_UNAVAILABLE_MESSAGE_BY_TYPE.homeDelivery)}
-                    </OrderTypeDesc>
-                  </OrderTypeContent>
-                  {canHomeDelivery && (
+                {canHomeDelivery && (
+                  <OrderTypeCard
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: orderType === OrderType.HOME_DELIVERY }}
+                    $selected={orderType === OrderType.HOME_DELIVERY}
+                    onPress={() => handleSelectOrderType(OrderType.HOME_DELIVERY)}
+                  >
+                    <OrderTypeIconBox $color="#7c3aed">
+                      <Ionicons name="car" size={28} color="#7c3aed" />
+                    </OrderTypeIconBox>
+                    <OrderTypeContent>
+                      <OrderTypeTitleRow>
+                        <OrderTypeTitle $selected={orderType === OrderType.HOME_DELIVERY}>Home Delivery</OrderTypeTitle>
+                      </OrderTypeTitleRow>
+                      <OrderTypeDesc>We’ll deliver it to your doorstep</OrderTypeDesc>
+                    </OrderTypeContent>
                     <OrderTypeRadio $selected={orderType === OrderType.HOME_DELIVERY}>
                       {orderType === OrderType.HOME_DELIVERY && <OrderTypeRadioDot />}
                     </OrderTypeRadio>
-                  )}
-                </OrderTypeCard>
+                  </OrderTypeCard>
+                )}
               </OrderTypeCardRow>
             ) : (
               <NoServiceCard>
@@ -1057,6 +1025,17 @@ const OrderTypeLocationScreen = () => {
             />
           )}
 
+          {orderType === OrderType.TAKE_AWAY && (
+            <Section>
+              <PickupCard>
+                <Ionicons name="bag-check-outline" size={24} color="#ee7513" />
+                <View style={{ flex: 1 }}>
+                  <SectionHeader>Freshly made for pickup</SectionHeader>
+                  <SectionSubtitle>Collect your order at the cafe. We’ll keep you updated on its progress.</SectionSubtitle>
+                </View>
+              </PickupCard>
+            </Section>
+          )}
           {/* Address and Delivery UI for Home Delivery */}
           {orderType === OrderType.HOME_DELIVERY && (
             <HomeDeliveryAddressSection
@@ -1123,7 +1102,7 @@ const OrderTypeLocationScreen = () => {
           <Animated.View
             style={[{ alignItems: 'center', justifyContent: 'center' }, btnAnimStyle]}
           >
-            <ContinueTextNew>Continue</ContinueTextNew>
+            <ContinueTextNew>{isContinueBusy ? 'Please wait…' : 'Continue to checkout'}</ContinueTextNew>
           </Animated.View>
         </ContinueButtonNew>
       </>
@@ -1143,38 +1122,19 @@ const TableSkeletonGrid = styled.View`
 `;
 
 const TableSkeletonCell = styled.View`
-  width: 23%;
-  aspect-ratio: 1;
+  width: 31%;
+  height: 104px;
   background-color: #f0f0f0;
   border-radius: 14px;
 `;
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
-  background-color: #fff;
+  background-color: #fffbf7;
 `;
 
-const HeaderContainer = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding: 10px;
-  padding-top: 30px;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const Title = styled.Text`
-  font-size: 20px;
-  font-weight: bold;
-  padding: 0 20px;
-  width: 70%;
-  text-align: center;
-`;
 
 const ContentContainer = styled.View`
   padding: 20px;
@@ -1195,7 +1155,7 @@ const SavedAddressesHeaderRow = styled.View`
 
 const MetaText = styled.Text`
   font-size: 13px;
-  color: #7C3AED;
+  color: #b96521;
   margin-bottom: 10px;
   font-weight: 600;
 `;
@@ -1209,8 +1169,8 @@ type BottomInsetProp = { $bottomInset: number };
 
 const SavedAddressCard = styled.TouchableOpacity<SelectedProp>`
   border-width: 1px;
-  border-color: ${(props) => props.$selected ? '#f68712' : '#ddd'};
-  background-color: ${(props) => props.$selected ? '#fff7ef' : '#fff'};
+  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ddd'};
+  background-color: ${(props: SelectedProp) => props.$selected ? '#fff7ef' : '#fff'};
   border-radius: 10px;
   padding: 10px;
   margin-bottom: 8px;
@@ -1240,6 +1200,8 @@ const DefaultBadgeText = styled.Text`
 `;
 
 const SavedAddressTopRow = styled.View`
+  gap: 8px;
+  flex-wrap: wrap;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
@@ -1273,7 +1235,7 @@ const SavedAddressText = styled.Text`
 
 const AddNewAddressInlineButton = styled.TouchableOpacity`
   border-width: 1px;
-  border-color: #7C3AED;
+  border-color: #ee7513;
   border-radius: 999px;
   min-height: 30px;
   padding: 6px 12px;
@@ -1284,7 +1246,7 @@ const AddNewAddressInlineButton = styled.TouchableOpacity`
 `;
 
 const AddNewAddressInlineText = styled.Text`
-  color: #7C3AED;
+  color: #b96521;
   font-size: 12px;
   font-weight: 700;
 `;
@@ -1301,7 +1263,7 @@ const SectionHeader = styled.Text`
   font-size: 16px;
   font-weight: bold;
   color: #222;
-  margin-bottom: 4px;
+  margin-bottom: 10px;
 `;
 
 const OrderTypeCardRow = styled.View`
@@ -1313,15 +1275,15 @@ const OrderTypeCardRow = styled.View`
 const OrderTypeCard = styled.TouchableOpacity<SelectedProp>`
   flex-direction: row;
   align-items: center;
-  background-color: ${(props) => props.$selected ? '#fff7ef' : '#f8f8f8'};
+  background-color: ${(props: SelectedProp) => props.$selected ? '#fff3e5' : '#fff'};
   border-width: 1px;
-  border-color: ${(props) => props.$selected ? '#f68712' : '#ececec'};
+  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ececec'};
   border-radius: 16px;
-  padding: 7px 12px;
+  padding: 14px 12px;
 `;
 
 const OrderTypeIconBox = styled.View<ColorProp>`
-  background-color: ${(props) => props.$color + '22'};
+  background-color: ${(props: ColorProp) => props.$color + '22'};
   border-radius: 12px;
   padding: 10px;
   margin-right: 14px;
@@ -1340,31 +1302,15 @@ const OrderTypeTitleRow = styled.View`
 const OrderTypeTitle = styled.Text<SelectedProp>`
   font-size: 14px;
   font-weight: bold;
-  color: ${(props) => props.$selected ? '#f68712' : '#222'};
+  color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#222'};
   margin-right: 8px;
 `;
 
-const OrderTypeSelectedBadge = styled.Text`
-  background: #fff3e0;
-  color: #f68712;
-  font-size: 10px;
-  font-weight: bold;
-  border-radius: 6px;
-  padding: 2px 6px;
-`;
 
 const OrderTypeDesc = styled.Text`
-  color: #888;
-  font-size: 10px;
-`;
-
-const OrderTypeUnavailableBadge = styled.Text`
-  background: #fef2f2;
-  color: #dc2626;
-  font-size: 10px;
-  font-weight: bold;
-  border-radius: 6px;
-  padding: 2px 6px;
+  color: #827d79;
+  font-size: 12px;
+  line-height: 17px;
 `;
 
 const NoServiceCard = styled.View`
@@ -1397,7 +1343,7 @@ const OrderTypeRadio = styled.View<SelectedProp>`
   height: 22px;
   border-radius: 11px;
   border-width: 2px;
-  border-color: ${(props) => props.$selected ? '#f68712' : '#ddd'};
+  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ddd'};
   align-items: center;
   justify-content: center;
   margin-left: 12px;
@@ -1413,22 +1359,20 @@ const OrderTypeRadioDot = styled.View`
 const TableGrid = styled.View`
   flex-direction: row;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 10px;
-  margin-bottom: 18px;
+  margin: 10px -5px 8px;
 `;
 
 const TableCell = styled.TouchableOpacity<SelectedReservedProp>`
-  width: 80px;
-  background: ${(props) => props.$reserved ? '#f7f7f7' : props.$selected ? '#fff7ef' : '#fff'};
+  width: 100%;
+  min-height: 104px;
+  background: ${(props: SelectedReservedProp) => props.$reserved ? '#f7f7f7' : props.$selected ? '#fff7ef' : '#fff'};
   border-width: 1px;
-  border-color: ${(props) => props.$reserved ? '#ececec' : props.$selected ? '#f68712' : '#ececec'};
+  border-color: ${(props: SelectedReservedProp) => props.$reserved ? '#ececec' : props.$selected ? '#f68712' : '#ececec'};
   border-radius: 14px;
   align-items: center;
   justify-content: center;
-  margin-bottom: 5px;
   padding: 10px;
-  opacity: ${(props) => props.$reserved ? 0.7 : 1};
+  opacity: ${(props: SelectedReservedProp) => props.$reserved ? 0.7 : 1};
 `;
 
 const TableIcon = styled.View`
@@ -1439,12 +1383,12 @@ const TableLabel = styled.Text<SelectedReservedProp>`
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  color: ${(props) => props.$reserved ? '#bbb' : props.$selected ? '#f68712' : '#222'};
+  color: ${(props: SelectedReservedProp) => props.$reserved ? '#bbb' : props.$selected ? '#f68712' : '#222'};
 `;
 
 const TableStatus = styled.Text<ReservedProp>`
   font-size: 10px;
-  color: ${(props) => props.$reserved ? '#e67e22' : '#43b02a'};
+  color: ${(props: ReservedProp) => props.$reserved ? '#e67e22' : '#43b02a'};
   margin-top: 2px;
   font-weight: 700;
 `;
@@ -1464,18 +1408,20 @@ const TableInfoIcon = styled.View`
 `;
 
 const TableInfoText = styled.Text`
-  color: #f68712;
-  font-size: 10px;
+  flex: 1;
+  color: #996329;
+  line-height: 17px;
+  font-size: 12px;
   font-weight: 600;
 `;
 
 const ContinueButtonNew = styled.TouchableOpacity<BottomInsetProp>`
-  background-color: #FF9100;
+  background-color: #ff8000;
   padding: 18px;
   border-radius: 12px;
   align-items: center;
   position: absolute;
-  bottom: ${(props) => Math.max(20, props.$bottomInset + 8)}px;
+  bottom: ${(props: BottomInsetProp) => Math.max(20, props.$bottomInset + 8)}px;
   width: 90%;
   align-self: center;
   shadow-color: #FF9100;
@@ -1487,7 +1433,7 @@ const ContinueButtonNew = styled.TouchableOpacity<BottomInsetProp>`
 
 const ContinueTextNew = styled.Text`
   color: #fff;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: bold;
   letter-spacing: 0.5px;
 `;
@@ -1512,3 +1458,34 @@ const TableIconSvg = ({ color = '#222' }: { color?: string }) => (
 
 
 
+
+const JourneyHeader = styled.View`
+  padding: 22px 20px 16px;
+`;
+const JourneyStep = styled.Text`
+  color: #bc6a26;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+`;
+const JourneyTitle = styled.Text`
+  font-size: 22px;
+  font-weight: 800;
+  color: #252a36;
+  margin-bottom: 6px;
+`;
+const SectionSubtitle = styled.Text`
+  color: #8a817b;
+  font-size: 12px;
+  line-height: 18px;
+  margin-bottom: 8px;
+`;
+const PickupCard = styled.View`
+  flex-direction: row;
+  gap: 12px;
+  background-color: #fff;
+  border: 1px solid #eee5dc;
+  border-radius: 16px;
+  padding: 18px;
+`;

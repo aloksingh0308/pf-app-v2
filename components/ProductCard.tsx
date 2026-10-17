@@ -3,11 +3,12 @@ import { decrementQuantity, incrementQuantity } from '@/store/slices/cartSlice';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { memo, useCallback, useEffect, useState } from 'react';
-import { Dimensions, TouchableOpacity } from 'react-native';
+import { Dimensions, TouchableOpacity, View, Text, StyleSheet } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
 import { Product } from '../types/Product';
 import AppImage from './AppImage';
+import FoodTypeMark from './common/FoodTypeMark';
 import { buildCartItemFromProduct, buildProductCartKey, getProductVariants } from '@/utils/productVariants';
 import { useAddToCartWithRestaurantGuard } from '@/hooks/useAddToCartWithRestaurantGuard';
 
@@ -57,6 +58,7 @@ const getRatingMeta = (product: Product) => {
 };
 
 interface Props {
+  layout?: 'grid' | 'list';
   product: Product;
   onPress: () => void;
   /** Opens the shared customize bottom sheet (variant + modifiers + addons) — fired
@@ -73,7 +75,7 @@ interface Props {
   restaurantName?: string;
 }
 
-const ProductCard: React.FC<Props> = memo(({ product, onPress, onCustomize, canAddToCart = true, onAddUnavailablePress, restaurantName }) => {
+const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, onCustomize, canAddToCart = true, onAddUnavailablePress, restaurantName }) => {
   const dispatch = useDispatch();
   const { addItem } = useAddToCartWithRestaurantGuard();
   const variants = getProductVariants(product);
@@ -142,6 +144,33 @@ const ProductCard: React.FC<Props> = memo(({ product, onPress, onCustomize, canA
   const badgeColor = badge ? BADGE_COLORS[badge] || '#43b02a' : undefined;
   const ratingMeta = getRatingMeta(product);
 
+  if (layout === 'list') {
+    return (
+      <View style={listStyles.row}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel={`View ${product.name}`} onPress={onPress} style={listStyles.photo}>
+          <AppImage uri={imageUris[0]} style={{ width: '100%', height: '100%' }} />
+          {badge ? <View style={listStyles.badge}><Text style={listStyles.badgeText}>{badge}</Text></View> : null}
+          {outOfStock ? <View style={listStyles.stock}><Text style={listStyles.badgeText}>Out of stock</Text></View> : null}
+        </TouchableOpacity>
+        <View style={{ flex: 1, paddingLeft: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+            <TouchableOpacity onPress={onPress} style={{ flex: 1 }}>
+              {product.foodType ? <View style={listStyles.mark}><FoodTypeMark foodType={product.foodType} /></View> : null}
+              <Text style={listStyles.name}>{product.name}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityLabel={isFav ? 'Remove from favourites' : 'Save to favourites'} accessibilityRole="button" onPress={toggleFav} style={{ padding: 6 }}><Ionicons name={isFav ? 'heart' : 'heart-outline'} size={21} color={isFav ? '#ef4444' : '#293241'} /></TouchableOpacity>
+          </View>
+          {product.description ? <Text numberOfLines={2} style={listStyles.description}>{product.description}</Text> : null}
+          <View style={listStyles.bottom}>
+            <Text style={listStyles.price}>₹{price.toFixed(0)}</Text>
+            {!isAdded || needsCustomization ? <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Add ${product.name}`} onPress={onAddToCart} style={[listStyles.add, outOfStock && { backgroundColor: '#aaa' }]}><Text style={listStyles.addText}>{outOfStock ? 'Unavailable' : 'ADD'}</Text>{!outOfStock && <Ionicons name="add-circle" size={23} color="#fff" />}</TouchableOpacity> : <View style={listStyles.quantity}><TouchableOpacity accessibilityLabel={`Remove one ${product.name}`} onPress={handleDecrement} style={listStyles.step}><Ionicons name="remove" size={18} color="#ff7500" /></TouchableOpacity><Text style={listStyles.quantityText}>{cartItem.quantity}</Text><TouchableOpacity accessibilityLabel={`Add one ${product.name}`} onPress={handleIncrement} style={listStyles.step}><Ionicons name="add" size={18} color="#ff7500" /></TouchableOpacity></View>}
+          </View>
+          {needsCustomization ? <Text style={listStyles.customize}>Customisable</Text> : null}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <CardContainer>
       <ImagePressArea activeOpacity={1} disabled onPress={onPress}>
@@ -163,7 +192,10 @@ const ProductCard: React.FC<Props> = memo(({ product, onPress, onCustomize, canA
         </ProductImageContainer>
       </ImagePressArea>
       <Content activeOpacity={1} disabled onPress={onPress}>
-        <Title numberOfLines={2}>{product.name}</Title>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
+          {product.foodType ? <View style={{ marginTop: 2 }}><FoodTypeMark foodType={product.foodType} size={13} /></View> : null}
+          <Title numberOfLines={2} style={{ flex: 1 }}>{product.name}</Title>
+        </View>
         <Description numberOfLines={2}>{product?.description}</Description>
         <Row>
           <PriceRow>
@@ -291,7 +323,7 @@ const RatingContainer = styled.View`
 `;
 
 const AddButton = styled.TouchableOpacity<{ $disabled?: boolean }>`
-  background-color: ${({ $disabled }) => ($disabled ? '#e5e7eb' : '#f68712')};
+  background-color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#e5e7eb' : '#f68712')};
   border-radius: 22px;
   flex-direction: row;
   align-items: center;
@@ -302,14 +334,14 @@ const AddButton = styled.TouchableOpacity<{ $disabled?: boolean }>`
 `;
 
 const AddButtonText = styled.Text<{ $disabled?: boolean }>`
-  color: ${({ $disabled }) => ($disabled ? '#6b7280' : '#fff')};
+  color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#6b7280' : '#fff')};
   font-size: 14px;
   font-weight: bold;
   margin-right: 8px;
 `;
 
 const AddButtonIconBox = styled.View<{ $disabled?: boolean }>`
-  background: ${({ $disabled }) => ($disabled ? '#f3f4f6' : '#fff')};
+  background: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#f3f4f6' : '#fff')};
   border-radius: 50px;
   width: 24px;
   height: 24px;
@@ -487,3 +519,21 @@ const StyledQtyValue = styled.Text`
 //
 // --- END FAVORITE HEADER ICON ---
 
+
+const listStyles = StyleSheet.create({
+  row: { flexDirection: 'row', paddingVertical: 14, marginHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
+  photo: { width: 102, height: 112, borderRadius: 13, overflow: 'hidden', backgroundColor: '#f4f4f4' },
+  badge: { position: 'absolute', top: 6, left: 5, backgroundColor: '#ff7500', padding: 4, borderRadius: 6 },
+  badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  stock: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#0009', padding: 7 },
+  mark: { paddingTop: 4, marginBottom: 2 },
+  name: { fontSize: 15, fontWeight: '800', color: '#141c2a', paddingTop: 4 },
+  description: { fontSize: 12, lineHeight: 17, color: '#707783', marginTop: 3 },
+  bottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 6 },
+  price: { fontSize: 17, color: '#ff7500', fontWeight: '800' },
+  add: { backgroundColor: '#ff7500', borderRadius: 22, minHeight: 38, paddingHorizontal: 10, flexDirection: 'row', gap: 7, alignItems: 'center' },
+  addText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  quantity: { borderWidth: 1, borderColor: '#ff7500', borderRadius: 20, flexDirection: 'row', alignItems: 'center' },
+  step: { padding: 10 }, quantityText: { color: '#ff7500', fontWeight: '800' },
+  customize: { color: '#929292', fontSize: 10, textAlign: 'right', marginTop: 4 },
+});

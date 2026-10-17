@@ -50,6 +50,11 @@ export function getActiveBranchCode(): string {
   return current?.branchCode || API_CONFIG.branchCode;
 }
 
+/** True once a screen has picked a real restaurant (not just the build-time default). */
+export function hasActiveRestaurant(): boolean {
+  return current !== null;
+}
+
 export function getActiveRestaurantId(): string | null {
   return current?.id || null;
 }

@@ -1,18 +1,17 @@
-import AppButton from '@/components/common/AppButton';
-import { AppColors } from '@/constants/appColors';
+import { formatDob } from '@/utils/dateOfBirth';
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import { ListRow, Palette, SectionCard, SectionTitle } from '@/components/common/ListSection';
 import { AppContent } from '@/constants/appContent';
 import { useAppLoader } from '@/hooks/useAppLoader';
 import { rewardService, type UserRewardItem } from '@/services/rewardService';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { userService } from '@/services/userService';
-import { DATABASE_MODE } from '@/config/database';
 import Constants from 'expo-constants';
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActivityIndicator } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useDispatch, useSelector } from "react-redux";
-import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../../services/alertService";
 import { authService } from "../../services/authService";
 import { storageService } from "../../services/storageService";
@@ -136,11 +135,11 @@ const ProfileScreen = () => {
 
     if (!user) {
         return (
-            <Container>
-                <LoadingContainer>
-                    <ActivityIndicator size="large" color="#f68712" />
-                </LoadingContainer>
-            </Container>
+            <PageScreen style={styles.page}>
+                <View style={styles.loading}>
+                    <ActivityIndicator size="large" color={Palette.primary} />
+                </View>
+            </PageScreen>
         );
     }
 
@@ -148,256 +147,117 @@ const ProfileScreen = () => {
         if (!isoDate) return '';
         const date = new Date(isoDate);
         if (isNaN(date.getTime())) return isoDate;
-        const day = String(date.getDate()).padStart(2, '0');
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const year = date.getFullYear();
-        return `${day}/${month}/${year}`;
+        return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
     };
 
+    const memberSince = formatDisplayDate(String(user.createdAt || ''));
+    const busy = loggingOut || disablingAccount;
+    const activeRewards = rewards.filter((reward) => reward.isActive && !reward.status?.toUpperCase().includes('USED')).length;
+
     return (
-        <Container>
-            <HeaderContainer>
-                <BackButton onPress={() => router.back()}>
-                    <Ionicons name="arrow-back" size={24} color={AppColors.textPrimary} />
-                </BackButton>
-                <Title>Your Profile</Title>
-                <PlaceholderButton />
-            </HeaderContainer>
-            <ProfileContentContainer>
-                <Animated.View entering={FadeInDown.delay(60).springify().damping(16)} style={{ alignItems: 'center' }}>
-                    <ProfileImageContainer>
-                        <ProfileImage source={{ uri: user.profileImage || AppContent.images.defaultProfile }} />
-                    </ProfileImageContainer>
-                    <NameText>{user.name}</NameText>
-                    <EmailText>{user.email}</EmailText>
-                </Animated.View>
-
-                <Animated.View entering={FadeInDown.delay(130).springify().damping(16)} style={{ width: '100%' }}>
-                    <AppButton
-                        title="Edit Profile"
+        <PageScreen style={styles.page}>
+            <PageHeader title="Your Profile" />
+            <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+                <Animated.View entering={FadeInDown.delay(60).springify().damping(16)} style={styles.headerCard}>
+                    <Image source={{ uri: user.profileImage || AppContent.images.defaultProfile }} style={styles.avatar} />
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.name} numberOfLines={1}>{user.name || 'Your name'}</Text>
+                        {user.phoneNumber ? <Text style={styles.meta} numberOfLines={1}>{user.phoneNumber}</Text> : null}
+                        {user.email ? <Text style={styles.meta} numberOfLines={1}>{user.email}</Text> : null}
+                    </View>
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Edit profile"
                         onPress={() => { appLoader.show(); router.push('/user/edit-profile' as never); }}
-                        style={{ marginBottom: 20, minHeight: 48 }}
-                    />
+                        style={({ pressed }) => [styles.editButton, pressed && { opacity: 0.8 }]}
+                    >
+                        <Ionicons name="create-outline" size={16} color={Palette.primary} />
+                        <Text style={styles.editText}>Edit</Text>
+                    </Pressable>
                 </Animated.View>
 
-                <Animated.View entering={FadeInDown.delay(200).springify().damping(16)} style={{ width: '100%' }}>
-                    <InfoCard>
-                        <InfoRow>
-                            <InfoLabel>Full Name</InfoLabel>
-                            <InfoValue>{user.name}</InfoValue>
-                        </InfoRow>
-                        <InfoRow>
-                            <InfoLabel>Email</InfoLabel>
-                            <InfoValue>{user.email}</InfoValue>
-                        </InfoRow>
-                        {user.dateOfBirth ? (
-                            <InfoRow>
-                                <InfoLabel>Date of Birth</InfoLabel>
-                                <InfoValue>{formatDisplayDate(user.dateOfBirth)}</InfoValue>
-                            </InfoRow>
-                        ) : null}
-                        <InfoRow>
-                            <InfoLabel>Phone Number</InfoLabel>
-                            <InfoValue>{user.phoneNumber}</InfoValue>
-                        </InfoRow>
-                        {user.location && (
-                            <InfoRow>
-                                <InfoLabel>Location</InfoLabel>
-                                <InfoValue>{user.location}</InfoValue>
-                            </InfoRow>
-                        )}
-                        {user.address && (
-                            <InfoRow>
-                                <InfoLabel>Address</InfoLabel>
-                                <InfoValue numberOfLines={2}>{user.address}</InfoValue>
-                            </InfoRow>
-                        )}
-                        <InfoRow>
-                            <InfoLabel>Member Since</InfoLabel>
-                            <InfoValue>{new Date(user.createdAt).toLocaleDateString()}</InfoValue>
-                        </InfoRow>
-                        <InfoRow>
-                            <InfoLabel>Wallet Balance</InfoLabel>
-                            <InfoValue>₹{Number(user.walletBalance || 0).toFixed(2)}</InfoValue>
-                        </InfoRow>
-                        <LastInfoButtonRow onPress={() => router.push('/user/rewards' as never)} activeOpacity={0.8}>
-                            <InfoLabel>Rewards</InfoLabel>
-                            <InfoButtonValueWrap>
-                                <InfoValue>{loadingRewards ? '...' : String(rewards.length)}</InfoValue>
-                                <InfoChevron name="chevron-forward" size={18} color={AppColors.textSecondary} />
-                            </InfoButtonValueWrap>
-                        </LastInfoButtonRow>
-                    </InfoCard>
+                <Animated.View entering={FadeInDown.delay(120).springify().damping(16)} style={styles.statsRow}>
+                    <Pressable accessibilityRole="button" style={styles.stat} onPress={() => router.push('/user/wallet-history' as never)}>
+                        <Text style={styles.statValue}>₹{Number(user.walletBalance || 0).toFixed(0)}</Text>
+                        <Text style={styles.statLabel}>Wallet</Text>
+                    </Pressable>
+                    <View style={styles.statDivider} />
+                    <Pressable accessibilityRole="button" style={styles.stat} onPress={() => router.push('/user/wallet-history' as never)}>
+                        <Text style={styles.statValue}>{Number(user.earnedCoin || 0)}</Text>
+                        <Text style={styles.statLabel}>Coins</Text>
+                    </Pressable>
+                    <View style={styles.statDivider} />
+                    <Pressable accessibilityRole="button" style={styles.stat} onPress={() => router.push('/user/rewards' as never)}>
+                        <Text style={styles.statValue}>{loadingRewards ? '…' : String(activeRewards)}</Text>
+                        <Text style={styles.statLabel}>Rewards</Text>
+                    </Pressable>
                 </Animated.View>
 
-                <Animated.View entering={FadeInUp.delay(260).springify().damping(16)} style={{ width: '100%' }}>
-                    <AppButton
-                        title="Logout"
-                        onPress={handleLogout}
-                        disabled={loggingOut || disablingAccount}
-                        loading={loggingOut}
-                        backgroundColor="#ff4444"
-                        style={{ marginTop: 60, minHeight: 50 }}
-                    />
+                <Animated.View entering={FadeInDown.delay(180).springify().damping(16)}>
+                    <SectionTitle>Personal details</SectionTitle>
+                    <SectionCard>
+                        <ListRow icon="person-outline" title="Full name" subtitle={user.name || 'Not added'} />
+                        <ListRow icon="call-outline" title="Phone number" subtitle={user.phoneNumber || 'Not added'} />
+                        <ListRow icon="mail-outline" title="Email" subtitle={user.email || 'Not added'} />
+                        {user.dateOfBirth ? <ListRow icon="calendar-outline" title="Date of birth" subtitle={formatDob(user.dateOfBirth)} /> : null}
+                        {user.address || user.location ? <ListRow icon="location-outline" title="Address" subtitle={String(user.address || user.location)} /> : null}
+                        {memberSince ? <ListRow icon="ribbon-outline" title="Member since" subtitle={memberSince} /> : null}
+                    </SectionCard>
 
-                    <AppButton
-                        title="Delete Account"
-                        onPress={handleDisableAccount}
-                        disabled={loggingOut || disablingAccount}
-                        loading={disablingAccount}
-                        backgroundColor={AppColors.lightBorder}
-                        textColor={AppColors.textPrimary}
-                        style={{ marginTop: 12, marginBottom: 24, minHeight: 50 }}
-                    />
+                    <SectionTitle>Wallet & rewards</SectionTitle>
+                    <SectionCard>
+                        <ListRow icon="wallet-outline" title="Wallet history" value={`₹${Number(user.walletBalance || 0).toFixed(2)}`} onPress={() => router.push('/user/wallet-history' as never)} />
+                        <ListRow icon="ticket-outline" title="My rewards" value={loadingRewards ? undefined : `${rewards.length}`} loading={loadingRewards} onPress={() => router.push('/user/rewards' as never)} />
+                        <ListRow icon="gift-outline" title="Refer & earn" subtitle={user.referralCode ? `Code: ${user.referralCode}` : undefined} onPress={() => router.push('/user/refer-earn' as never)} />
+                    </SectionCard>
 
-                    <BuildMetaText>
-                        Version {appVersion} • {DATABASE_MODE} mode
-                    </BuildMetaText>
+                    <SectionTitle>Account</SectionTitle>
+                    <SectionCard>
+                        <ListRow icon="log-out-outline" title="Logout" onPress={handleLogout} loading={loggingOut} disabled={busy} showChevron={false} />
+                        <ListRow icon="trash-outline" title="Delete account" subtitle="Permanently remove your account" destructive onPress={handleDisableAccount} loading={disablingAccount} disabled={busy} showChevron={false} />
+                    </SectionCard>
+
+                    <Text style={styles.version}>Version {appVersion}</Text>
                 </Animated.View>
-            </ProfileContentContainer>
-        </Container>
+            </ScrollView>
+        </PageScreen>
     );
 };
 
 export default ProfileScreen;
 
-const Container = styled.SafeAreaView`
-  flex: 1;
-    align-items: center;
-    background-color: ${AppColors.background};
-`;
-
-const LoadingContainer = styled.View`
-  flex: 1;
-  justify-content: center;
-  align-items: center;
-`;
-
-const Title = styled.Text`
-  font-size: 22px;
-  font-weight: bold;
-    color: ${AppColors.textPrimary};
-`;
-
-const HeaderContainer = styled.View`
-  width: 100%;
-  padding: 16px;
-    background-color: ${AppColors.background};
-  border-bottom-width: 1px;
-    border-bottom-color: ${AppColors.border};
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-`;
-
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
-
-const PlaceholderButton = styled.View`
-  width: 40px;
-  height: 40px;
-`;
-
-const ProfileContentContainer = styled.ScrollView`
-  flex: 1;
-  width: 100%;
-  padding: 20px;
-`;
-
-const InfoCard = styled.View`
-    border-width: 1px;
-    border-color: ${AppColors.border};
-    border-radius: 12px;
-    background-color: ${AppColors.white};
-    padding: 0 14px;
-`;
-
-const ProfileImageContainer = styled.View`
-  width: 120px;
-  height: 120px;
-  border-radius: 60px;
-    background-color: ${AppColors.border};
-  align-self: center;
-  margin-bottom: 20px;
-  border-width: 2px;
-    border-color: ${AppColors.primary};
-`;
-
-const ProfileImage = styled.Image`
-  width: 100%;
-  height: 100%;
-  border-radius: 60px;
-`;
-
-const NameText = styled.Text`
-  font-size: 24px;
-  font-weight: bold;
-    color: ${AppColors.textPrimary};
-  text-align: center;
-  margin-bottom: 5px;
-`;
-
-const EmailText = styled.Text`
-  font-size: 14px;
-    color: ${AppColors.textSecondary};
-  text-align: center;
-  margin-bottom: 25px;
-`;
-
-const InfoRow = styled.View`
-  flex-direction: row;
-  justify-content: space-between;
-  padding: 16px 0;
-  border-bottom-width: 1px;
-  border-bottom-color: ${AppColors.border};
-  align-items: center;
-`;
-
-const LastInfoRow = styled(InfoRow)`
-    border-bottom-width: 0px;
-`;
-
-const LastInfoButtonRow = styled.TouchableOpacity`
-    flex-direction: row;
-    justify-content: space-between;
-    padding: 16px 0;
-    align-items: center;
-`;
-
-const InfoLabel = styled.Text`
-  font-size: 14px;
-    color: ${AppColors.textSecondary};
-  font-weight: 500;
-  flex: 1;
-`;
-
-const InfoValue = styled.Text`
-  font-size: 14px;
-    color: ${AppColors.textPrimary};
-  font-weight: 600;
-  flex: 1;
-  text-align: right;
-  margin-left: 10px;
-`;
-
-const InfoButtonValueWrap = styled.View`
-    flex-direction: row;
-    align-items: center;
-    justify-content: flex-end;
-    flex: 1;
-`;
-
-const InfoChevron = styled(Ionicons)`
-    margin-left: 4px;
-`;
-
-const BuildMetaText = styled.Text`
-    text-align: center;
-    font-size: 12px;
-    color: ${AppColors.textSecondary};
-    margin-bottom: 8px;
-`;
+const styles = StyleSheet.create({
+    page: { flex: 1, backgroundColor: Palette.page },
+    loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    content: { padding: 16, paddingBottom: 40 },
+    headerCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 14,
+        backgroundColor: '#fff',
+        borderRadius: 20,
+        padding: 16,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: '#e6e6ea',
+    },
+    avatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: Palette.hairline, borderWidth: 2, borderColor: Palette.primary },
+    name: { fontSize: 19, fontWeight: '800', color: Palette.text },
+    meta: { fontSize: 13, color: Palette.textSecondary, marginTop: 2 },
+    editButton: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Palette.primarySoft, borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 },
+    editText: { color: Palette.primary, fontWeight: '800', fontSize: 13 },
+    statsRow: {
+        marginTop: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        paddingVertical: 14,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: '#e6e6ea',
+    },
+    stat: { flex: 1, alignItems: 'center' },
+    statValue: { fontSize: 18, fontWeight: '800', color: Palette.primary },
+    statLabel: { fontSize: 12, color: Palette.textSecondary, marginTop: 2 },
+    statDivider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', backgroundColor: Palette.hairline },
+    version: { textAlign: 'center', fontSize: 12, color: Palette.textMuted, marginTop: 28 },
+});

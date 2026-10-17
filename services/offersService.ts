@@ -18,10 +18,12 @@ export type OfferRecord = {
   restaurantImage: string | null;
   title: string;
   description: string;
-  discountType: 'PERCENTAGE' | 'FLAT' | 'FREE_ITEM';
+  discountType: 'PERCENTAGE' | 'FLAT' | 'FREE_ITEM' | 'BUY_X_GET_Y';
   discountValue: number;
   maxDiscount: number;
   minOrderAmount: number;
+  /** A "buy X get Y" coupon's deal in words, from the server. */
+  dealHeadline?: string | null;
   couponCode: string;
   validUntil: string;
   distanceKm: number | null;
@@ -32,6 +34,7 @@ export type OfferRecord = {
  *  too since this card needs it before a restaurant/branch context exists to reuse that
  *  screen's own formatting helper directly. */
 export const formatOfferHeadline = (offer: OfferRecord): string => {
+  if (offer.dealHeadline) return offer.dealHeadline;
   if (offer.discountType === 'PERCENTAGE') {
     return `${offer.discountValue}% OFF`;
   }
@@ -66,14 +69,21 @@ export type BranchOfferRecord = {
   bogoBuyItemName: string | null;
   bogoGetItemName: string | null;
   freeItemName: string | null;
+  /** Code of the coupon that gives this offer's discount at checkout, if one is linked. */
+  couponCode?: string | null;
   startDate: string;
   endDate: string;
+  /** Server-worded headline/details ("Buy 1 Farmhouse Pizza, get 1 Masala Coke free" ·
+   *  "Every Mon · 2 pm–4 pm"); absent from an older backend. */
+  headline?: string;
+  details?: string;
 };
 
 /** Same discount-label convention as formatOfferHeadline above, adapted for the richer set
  *  of offer types this branch-scoped endpoint can return (BOGO/Happy Hours/Free Item have
  *  no single "X% off" headline). */
 export const formatBranchOfferHeadline = (offer: BranchOfferRecord): string => {
+  if (offer.headline) return offer.headline;
   switch (offer.type) {
     case 'BOGO':
       return offer.bogoBuyItemName && offer.bogoGetItemName

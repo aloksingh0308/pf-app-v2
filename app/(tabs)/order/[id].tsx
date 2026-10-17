@@ -1,63 +1,66 @@
-import Ionicons from '@react-native-vector-icons/ionicons';
-import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import { useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator } from 'react-native';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../../services/alertService';
 import { getMyOrders } from '@/services/orderService';
+import { orderStatusLabel } from '@/utils/orderStatus';
+import { usePolling } from '@/utils/polling';
+import { isRateLimited } from '@/utils/apiClient';
+
+const ORDER_POLL_MS = 20_000;
 
 const OrderDetails = () => {
   const { id } = useLocalSearchParams();
   const [order, setOrder] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const loadedOnceRef = useRef(false);
+
   useEffect(() => {
     if (!id) {
       showAlert('Error', 'Order id missing');
       setLoading(false);
-      return;
     }
+  }, [id]);
 
-    let cancelled = false;
-
-    // Replaces the Firestore onSnapshot live listener with polling against the customer
-    // account's own "my orders" endpoint (already aggregated across every restaurant it's
-    // ordered from — see orderService.getMyOrders), filtered down to this one order. No
-    // per-order live endpoint is needed since the list is already cheap to fetch in full.
-    const fetchOrder = async () => {
+  // Replaces the Firestore onSnapshot live listener with polling against the customer
+  // account's own "my orders" endpoint (already aggregated across every restaurant it's
+  // ordered from — see orderService.getMyOrders), filtered down to this one order. Runs
+  // only while this screen is visible (utils/polling.ts). Only the FIRST load's failure
+  // is worth an alert — a background refresh failing just keeps the last known order.
+  usePolling(
+    async () => {
       try {
         const orders = await getMyOrders();
-        if (cancelled) return;
         setOrder(orders.find((o) => o.id === id) || null);
+        loadedOnceRef.current = true;
       } catch (err) {
-        console.error('Error loading order:', err);
-        if (!cancelled) showErrorAlert(err, 'Failed to load order. Please try again.', 'Error');
+        if (!loadedOnceRef.current && !isRateLimited(err)) {
+          console.error('Error loading order:', err);
+          showErrorAlert(err, 'Failed to load order. Please try again.', 'Error');
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
-    };
-
-    setLoading(true);
-    fetchOrder();
-    const interval = setInterval(fetchOrder, 15000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [id]);
+    },
+    ORDER_POLL_MS,
+    Boolean(id)
+  );
 
   if (loading) {
     return (
-      <Center>
+      <Container><PageHeader title="Order Details" /><Center>
         <ActivityIndicator size="large" color="#f68712" />
-      </Center>
+      </Center></Container>
     );
   }
 
   if (!order) {
     return (
       <Container>
+        <PageHeader title="Order Details" />
         <EmptyText>Order not found.</EmptyText>
       </Container>
     );
@@ -67,17 +70,12 @@ const OrderDetails = () => {
 
   return (
     <Container>
-      <Header>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={32} color="#282939" />
-        </BackButton>
-        <HeaderTitle>Order Details</HeaderTitle>
-      </Header>
+      <PageHeader title="Order Details" />
 
       <Card>
         <Row>
           <OrderId>Order {visibleOrderId}</OrderId>
-          <Status>{order.status}</Status>
+          <Status>{orderStatusLabel(order.status)}</Status>
         </Row>
         <SmallRow>
           <MetaText>{new Date(order.createdAt?.toDate?.() || order.createdAt).toLocaleString()}</MetaText>
@@ -131,7 +129,7 @@ const OrderDetails = () => {
 
 export default OrderDetails;
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background: #fff;
 `;
@@ -148,26 +146,7 @@ const EmptyText = styled.Text`
   color: #666;
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding: 16px;
-  border-bottom-width: 1px;
-  border-bottom-color: #f0f0f0;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
-const HeaderTitle = styled.Text`
-  flex: 1;
-  text-align: center;
-  font-weight: 700;
-  color: #333;
-`;
 
 const Card = styled.ScrollView`
   padding: 16px;

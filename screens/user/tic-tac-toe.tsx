@@ -1,6 +1,5 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { AppStrings } from '@/constants/appStrings';
-import Ionicons from '@react-native-vector-icons/ionicons';
-import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Animated, Easing, Modal } from 'react-native';
 import styled from 'styled-components/native';
@@ -303,13 +302,7 @@ export default function TicTacToeScreen() {
 
   return (
     <Container>
-      <Header>
-        <BackButton onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color="#282939" />
-        </BackButton>
-        <Title>Tic Tac Toe</Title>
-        <Spacer />
-      </Header>
+      <PageHeader title="Tic Tac Toe" />
 
       <Content>
         <ModeRow>
@@ -379,37 +372,14 @@ export default function TicTacToeScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: #fff;
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom-width: 1px;
-  border-bottom-color: #eee;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const Spacer = styled.View`
-  width: 40px;
-  height: 40px;
-`;
 
-const Title = styled.Text`
-  font-size: 22px;
-  font-weight: 700;
-  color: #1a1a1a;
-`;
 
 const Content = styled.View`
   flex: 1;

@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from "react-redux";
 import styled from "styled-components/native";
 import { AppDispatch, RootState } from "../store";
-import { moderateScale, moderateVerticalScale, scaleFont } from "@/utils/responsive";
+import { moderateScale, scaleFont } from "@/utils/responsive";
 import ChangeLocationModal from './ChangeLocationModal';
 
 const HomeHeader = () => {
@@ -76,7 +76,7 @@ const HomeHeader = () => {
         <HeaderContainer>
             <LeftSectionContainer>
                 <LogoContainer disabled>
-                    <LogoImage source={require('../assets/images/logo.png')} />
+                    <LogoImage source={require('../assets/images/pf_logo_circle.png')} resizeMode="contain" accessibilityLabel="Prayagi Foodwala" />
                 </LogoContainer>
                 <LocationContainer activeOpacity={0.7} onPress={() => setIsChangeLocationVisible(true)}>
                   <Ionicons name="location-sharp" size={moderateScale(16)} color={AppColors.primary} />
@@ -100,12 +100,12 @@ export default HomeHeader;
 
 const HeaderContainer = styled.View`
   flex-direction: row;
-  padding: ${moderateVerticalScale(0)}px ${moderateScale(10)}px ${moderateVerticalScale(20)}px ${moderateScale(10)}px;
+  padding: 10px 14px 16px 14px;
 
 `;
 
 const HeaderTitle = styled.Text`
-  font-size: ${scaleFont(14)}px;
+  font-size: ${scaleFont(12)}px;
   font-weight: 700;
   color: ${AppColors.textPrimary};
 `;
@@ -125,19 +125,26 @@ const LocationTextWrap = styled.View`
 const LocationContainer = styled.TouchableOpacity`
   flex: 1;
   margin: 0 ${moderateScale(10)}px;
-  min-height: ${moderateVerticalScale(44)}px;
+  min-height: 52px;
   border-radius: ${moderateScale(10)}px;
   padding: 0 ${moderateScale(10)}px;
-  background-color: #f4f4f4;
+  background-color: #fff0e4;
   flex-direction: row;
   align-items: center;
 `;
 
 const LogoContainer = styled.TouchableOpacity`
   width: ${moderateScale(48)}px;
-  height: ${moderateVerticalScale(48)}px;
+  height: ${moderateScale(48)}px;
   justify-content: center;
   align-items: center;
+`;
+
+const LogoImage = styled.Image`
+  width: ${moderateScale(48)}px;
+  height: ${moderateScale(48)}px;
+  border-radius: ${moderateScale(24)}px;
+  background-color: #ffffff;
 `;
 
 const LeftSectionContainer = styled.View`
@@ -147,14 +154,9 @@ const LeftSectionContainer = styled.View`
     width: 100%;
 `;
 
-const LogoImage = styled.Image`
-  width: 100%;
-  height: 100%;
-`;
-
 const ProfileImageContainer = styled.TouchableOpacity`
-  width: ${moderateScale(48)}px;
-  height: ${moderateVerticalScale(48)}px;
+  width: ${moderateScale(42)}px;
+  height: ${moderateScale(42)}px;
   border-radius: ${moderateScale(24)}px;
   overflow: hidden;
   background-color: ${AppColors.primary};

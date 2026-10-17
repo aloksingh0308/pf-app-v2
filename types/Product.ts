@@ -1,4 +1,7 @@
 // types/Product.ts
+/** Mirrors the backend MenuItem.foodType enum (models/MenuItem.ts). */
+export type FoodType = 'VEG' | 'NON_VEG' | 'EGG' | 'VEGAN';
+
 export interface ProductVariant {
   id?: string;
   name: string;
@@ -48,9 +51,13 @@ export interface Product {
   qty?: string | null;
   serves?: string | null;
   categoryId: string | null;
+  /** Coupons never discount this dish (its category is marked "no coupons", e.g. beverages). */
+  couponExcluded?: boolean;
   cafeId?: string | null;
   restaurantId?: string | null;
   emoji: string | null;
+  /** Veg / non-veg marker from the backend menu item — absent on older cached cart items. */
+  foodType?: FoodType;
   available: boolean;
   inStock?: boolean;
   hasHalfPortion?: boolean;
@@ -74,6 +81,9 @@ export interface Product {
   dealCartId?: string | null;
   dealName?: string | null;
   dealPrice?: number | null;
+  /** How many of this item ONE combo contains (e.g. 2 for "Veg Noodles x2"). Combo count
+   *  in the cart = quantity / dealUnitQty — see utils/dealCart.ts. */
+  dealUnitQty?: number | null;
   originalDealPrice?: number | null;
   createdAt?: any;
 }

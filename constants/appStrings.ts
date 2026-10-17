@@ -2,7 +2,9 @@ export const AppStrings = {
   appName: "Prayagi FoodWala",
   fallback: {
     offlineTitle: 'No Internet Connection',
-    offlineMessage: 'Please check your internet and try again.',
+    offlineMessage: "You're offline. Check your connection and we'll pick up right where you left off.",
+    serverTitle: "Can't Reach Prayagi Foodwala",
+    serverMessage: "Our servers aren't responding right now. Please try again in a moment.",
     slowTitle: 'Slow Internet Detected',
     slowMessage: 'Your connection is very slow. Please wait or retry when network improves.',
     retry: 'Retry',

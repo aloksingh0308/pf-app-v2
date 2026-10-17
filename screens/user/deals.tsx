@@ -1,10 +1,10 @@
+import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppImage from '@/components/AppImage';
 import { AppColors } from '@/constants/appColors';
 import { showAlert } from '@/services/alertService';
 import { buildCartItemsForDeal, buildDealDescription, fetchActiveDeals, hydrateDealItemNames } from '@/services/dealsService';
 import { DealMenuView } from '@/types/Deal';
-import Ionicons from '@react-native-vector-icons/ionicons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,7 +35,6 @@ const getSavingsLabel = (deal: DealMenuView) => {
 
 export default function DealsScreen() {
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
   const { addItems } = useAddToCartWithRestaurantGuard();
   const [deals, setDeals] = useState<DealMenuView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,12 +85,7 @@ export default function DealsScreen() {
 
   return (
     <Container>
-      <Header style={{ paddingTop: Math.max(insets.top, 24) }}>
-        <BackButton onPress={() => navigation.goBack()}>
-          <Ionicons name="chevron-back" size={24} color="#282939" />
-        </BackButton>
-        <HeaderTitle>Today&apos;s Deals</HeaderTitle>
-      </Header>
+      <PageHeader title="Today’s Deals" />
 
       {loading ? (
         <Center>
@@ -148,31 +142,13 @@ export default function DealsScreen() {
   );
 }
 
-const Container = styled.SafeAreaView`
+const Container = styled(PageScreen)`
   flex: 1;
   background-color: #fff;
 `;
 
-const Header = styled.View`
-  flex-direction: row;
-  align-items: center;
-  padding-horizontal: 10px;
-  padding-bottom: 10px;
-`;
 
-const BackButton = styled.TouchableOpacity`
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  align-items: center;
-`;
 
-const HeaderTitle = styled.Text`
-  font-size: 20px;
-  font-weight: 800;
-  color: #171717;
-  margin-left: 8px;
-`;
 
 const Center = styled.View`
   flex: 1;

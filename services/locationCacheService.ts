@@ -14,10 +14,13 @@ export type CachedUserLocation = {
   longitude: number;
   accuracy?: number | null;
   timestamp: number;
+  /** A confirmed delivery destination must not be replaced by foreground GPS. */
+  source?: 'device' | 'selected';
   addressLine?: string | null;
   addressResolvedAt?: number | null;
 };
 
+let locationRevision = 0;
 let inMemoryCache: CachedUserLocation | null = null;
 // Guards only the actual GPS+network refresh, never a plain cache read — a
 // forced refresh kicked off from one screen (e.g. app foreground) must not
@@ -49,12 +52,14 @@ const normalizeCachePayload = (value: unknown): CachedUserLocation | null => {
     longitude,
     accuracy: isFiniteNumber(raw.accuracy) ? Number(raw.accuracy) : null,
     timestamp,
+    source: raw.source === 'selected' ? 'selected' : 'device',
     addressLine: typeof raw.addressLine === 'string' ? raw.addressLine : null,
     addressResolvedAt: isFiniteNumber(raw.addressResolvedAt) ? Number(raw.addressResolvedAt) : null,
   };
 };
 
 const isFresh = (location: CachedUserLocation | null, maxAgeMs: number) => {
+  if (location?.source === 'selected') return true;
   if (!location?.timestamp) {
     return false;
   }
@@ -167,8 +172,10 @@ export const saveCachedUserLocation = async (
   nextLocation: CachedUserLocation,
   dispatch?: AppDispatch
 ) => {
+  const revision = ++locationRevision;
   inMemoryCache = nextLocation;
   await writeStorageCache(nextLocation);
+  if (revision !== locationRevision) return;
 
   if (dispatch) {
     dispatch(setLocation({
@@ -220,7 +227,9 @@ export const getFreshCachedUserLocation = async (
     return inMemoryCache;
   }
 
+  const revision = locationRevision;
   const fromStorage = await readStorageCache();
+  if (revision !== locationRevision) return inMemoryCache;
   if (!fromStorage) {
     return null;
   }
@@ -252,6 +261,7 @@ const refreshUserLocationNow = async (options?: {
     return refreshInFlightPromise;
   }
 
+  const revision = locationRevision;
   refreshInFlightPromise = (async () => {
     const permission = await Location.getForegroundPermissionsAsync();
     let status = permission.status;
@@ -265,6 +275,7 @@ const refreshUserLocationNow = async (options?: {
     }
 
     const position = await getPositionWithFallback();
+    if (revision !== locationRevision) return inMemoryCache;
     if (!position?.coords) {
       return null;
     }
@@ -316,11 +327,16 @@ export const warmupUserLocationCache = async (options?: {
 }): Promise<CachedUserLocation | null> => {
   const maxAgeMs = options?.maxAgeMs ?? DEFAULT_LOCATION_MAX_AGE_MS;
 
+  const selected = await getFreshCachedUserLocation(maxAgeMs);
+  if (selected?.source === 'selected') {
+    dispatchLocation(selected, options?.dispatch);
+    return selected;
+  }
+
   if (!options?.forceRefresh) {
-    const cached = await getFreshCachedUserLocation(maxAgeMs);
-    if (cached) {
-      dispatchLocation(cached, options?.dispatch);
-      return cached;
+    if (selected) {
+      dispatchLocation(selected, options?.dispatch);
+      return selected;
     }
     return refreshUserLocationNow(options);
   }
@@ -353,8 +369,9 @@ export const hydrateCachedLocationAddress = async (options?: {
 
   addressHydrationInFlight = true;
   try {
+    const revision = locationRevision;
     const address = await reverseGeocodeAddress(cached.latitude, cached.longitude);
-    if (address) {
+    if (address && revision === locationRevision) {
       await updateCachedUserAddress(address, options?.dispatch);
     }
   } finally {

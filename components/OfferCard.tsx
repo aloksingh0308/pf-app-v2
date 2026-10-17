@@ -1,108 +1,199 @@
 import AppImage from '@/components/AppImage';
 import { formatOfferHeadline, type OfferRecord } from '@/services/offersService';
 import { formatDistance, formatEta } from '@/services/restaurantService';
-import { moderateScale, moderateVerticalScale, scaleFont } from '@/utils/responsive';
+import { moderateScale, scaleFont } from '@/utils/responsive';
+import Ionicons from '@react-native-vector-icons/ionicons';
 import React from 'react';
-import { Pressable } from 'react-native';
+import { Pressable, View } from 'react-native';
 import styled from 'styled-components/native';
 
 const FALLBACK_CAFE_IMAGE = 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1200&q=80';
 
-/** "Offers Near You" card — every offer is tied to a real restaurant (image/name/distance),
- *  never a bare coupon-code chip, per the discovery-through-offer product requirement.
- *  Tapping it hands the offer to the restaurant details screen (see app/home.tsx's
- *  `handleOfferPress`) rather than a generic coupon list. */
-export function OfferCard({ offer, onPress }: { offer: OfferRecord; onPress: () => void }) {
-  const metaLine = [formatEta(offer.deliveryTime), formatDistance(offer.distanceKm)].filter(Boolean).join(' · ');
+/** "20% OFF" → ["20%", "OFF"], "FREE ITEM" → ["FREE", "ITEM"] — the ticket stub stacks them. */
+const splitHeadline = (headline: string): [string, string] => {
+  const index = headline.lastIndexOf(' ');
+  return index > 0 ? [headline.slice(0, index), headline.slice(index + 1)] : [headline, ''];
+};
+
+const formatValidity = (validUntil: string): string => {
+  const date = new Date(validUntil);
+  if (Number.isNaN(date.getTime())) return '';
+  const days = Math.ceil((date.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return 'Ends today';
+  if (days === 1) return 'Ends tomorrow';
+  if (days <= 7) return `Ends in ${days} days`;
+  return `Valid till ${date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
+};
+
+/** "Offers Near You" coupon ticket — every offer is tied to a real restaurant, never a bare
+ *  code chip. Tapping it hands the offer to the restaurant details screen (app/home.tsx's
+ *  `handleOfferPress`). `fullWidth` is the stacked "View All" list; otherwise it's sized for
+ *  the horizontal home carousel. */
+export function OfferCard({ offer, onPress, fullWidth = false }: { offer: OfferRecord; onPress: () => void; fullWidth?: boolean }) {
+  const [amount, unit] = splitHeadline(formatOfferHeadline(offer));
+  const conditions = [
+    offer.minOrderAmount > 0 ? `Min order ₹${offer.minOrderAmount}` : 'No minimum order',
+    offer.discountType === 'PERCENTAGE' && offer.maxDiscount > 0 ? `Up to ₹${offer.maxDiscount}` : '',
+  ].filter(Boolean).join(' · ');
+  const meta = [formatEta(offer.deliveryTime), formatDistance(offer.distanceKm)].filter(Boolean).join(' · ');
+  const validity = formatValidity(offer.validUntil);
+
   return (
-    <Pressable onPress={onPress}>
-      <Card>
-        <ImageWrap>
-          <AppImage uri={offer.restaurantImage || undefined} fallbackUri={FALLBACK_CAFE_IMAGE} style={{ width: '100%', height: '100%' }} />
-          <HeadlineBadge>
-            <HeadlineText numberOfLines={1}>{formatOfferHeadline(offer)}</HeadlineText>
-          </HeadlineBadge>
-        </ImageWrap>
-        <Content>
-          {offer.minOrderAmount > 0 ? <OfferDesc numberOfLines={1}>On orders above ₹{offer.minOrderAmount}</OfferDesc> : null}
-          <RestaurantName numberOfLines={1}>{offer.restaurantName}</RestaurantName>
-          {metaLine ? <MetaText numberOfLines={1}>{metaLine}</MetaText> : null}
-          <CodeRow>
-            <CodeText numberOfLines={1}>Code: {offer.couponCode}</CodeText>
-          </CodeRow>
-        </Content>
-      </Card>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${amount} ${unit} at ${offer.restaurantName}, code ${offer.couponCode}`}
+      onPress={onPress}
+      style={({ pressed }) => ({ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.985 : 1 }] })}
+    >
+      <Ticket
+        style={[
+          fullWidth ? { width: '100%' } : { width: moderateScale(300), marginRight: moderateScale(12) },
+          { shadowColor: '#b85a12', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+        ]}
+      >
+        <Stub>
+          <StubAmount numberOfLines={1} adjustsFontSizeToFit>{amount}</StubAmount>
+          {unit ? <StubUnit>{unit}</StubUnit> : null}
+        </Stub>
+
+        {/* Perforation: two half-circle notches cut into the ticket where stub meets body. */}
+        <Notch style={{ top: -9 }} />
+        <Notch style={{ bottom: -9 }} />
+
+        <Body>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Logo>
+              <AppImage uri={offer.restaurantImage || undefined} fallbackUri={FALLBACK_CAFE_IMAGE} style={{ width: '100%', height: '100%' }} />
+            </Logo>
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <RestaurantName numberOfLines={1}>{offer.restaurantName}</RestaurantName>
+              {meta ? <MetaText numberOfLines={1}>{meta}</MetaText> : null}
+            </View>
+          </View>
+
+          <ConditionText numberOfLines={1}>{offer.title && offer.title !== offer.couponCode ? offer.title : conditions}</ConditionText>
+          {offer.title && offer.title !== offer.couponCode ? <MetaText numberOfLines={1}>{conditions}</MetaText> : null}
+
+          <Divider />
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <CodeChip>
+              <Ionicons name="pricetag" size={11} color="#e0680c" />
+              <CodeText numberOfLines={1}>{offer.couponCode}</CodeText>
+            </CodeChip>
+            {validity ? <ValidityText numberOfLines={1}>{validity}</ValidityText> : null}
+          </View>
+        </Body>
+      </Ticket>
     </Pressable>
   );
 }
 
-const Card = styled.View`
-  width: ${moderateScale(240)}px;
-  margin-right: ${moderateScale(12)}px;
-  border-radius: ${moderateScale(14)}px;
-  overflow: hidden;
+const Ticket = styled.View`
+  flex-direction: row;
+  min-height: 132px;
+  border-radius: 16px;
   background-color: #fff;
   border-width: 1px;
-  border-color: #ececec;
+  border-color: #f6e2cf;
 `;
 
-const ImageWrap = styled.View`
-  width: 100%;
-  height: ${moderateVerticalScale(96)}px;
-  background-color: #f4f4f4;
+const Stub = styled.View`
+  width: 92px;
+  background-color: #f47b1f;
+  border-top-left-radius: 15px;
+  border-bottom-left-radius: 15px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 8px;
 `;
 
-const HeadlineBadge = styled.View`
-  position: absolute;
-  left: ${moderateScale(10)}px;
-  bottom: ${moderateVerticalScale(8)}px;
-  background-color: #f68712;
-  border-radius: ${moderateScale(8)}px;
-  padding: ${moderateVerticalScale(4)}px ${moderateScale(9)}px;
-`;
-
-const HeadlineText = styled.Text`
+const StubAmount = styled.Text`
   color: #fff;
-  font-size: ${scaleFont(13)}px;
+  font-size: ${scaleFont(26)}px;
   font-weight: 900;
 `;
 
-const Content = styled.View`
-  padding: ${moderateScale(10)}px;
+const StubUnit = styled.Text`
+  color: #ffe6cf;
+  font-size: ${scaleFont(13)}px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  margin-top: 2px;
 `;
 
-const OfferDesc = styled.Text`
-  color: #7a7a7a;
-  font-size: ${scaleFont(11)}px;
-  font-weight: 600;
+const Notch = styled.View`
+  position: absolute;
+  left: 83px;
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background-color: #fffbf7;
+  border-width: 1px;
+  border-color: #f6e2cf;
+`;
+
+const Body = styled.View`
+  flex: 1;
+  padding: 12px 14px 12px 16px;
+`;
+
+const Logo = styled.View`
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  overflow: hidden;
+  background-color: #fff3e6;
 `;
 
 const RestaurantName = styled.Text`
-  margin-top: ${moderateVerticalScale(3)}px;
-  color: #1b1b1b;
+  color: #1b1f29;
   font-size: ${scaleFont(14)}px;
   font-weight: 800;
 `;
 
 const MetaText = styled.Text`
-  margin-top: ${moderateVerticalScale(3)}px;
-  color: #7a7a7a;
+  color: #8a8f98;
   font-size: ${scaleFont(11)}px;
-  font-weight: 600;
+  margin-top: 1px;
 `;
 
-const CodeRow = styled.View`
-  margin-top: ${moderateVerticalScale(6)}px;
-  align-self: flex-start;
-  border-radius: ${moderateScale(6)}px;
+const ConditionText = styled.Text`
+  color: #3a3f4a;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 700;
+  margin-top: 10px;
+`;
+
+const Divider = styled.View`
+  border-top-width: 1px;
+  border-top-color: #f1e3d6;
+  border-style: dashed;
+  margin: 10px 0 9px;
+`;
+
+const CodeChip = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 1;
+  border-radius: 6px;
   border-width: 1px;
-  border-color: #ffd3a8;
+  border-style: dashed;
+  border-color: #f4a261;
   background-color: #fff6ec;
-  padding: ${moderateVerticalScale(4)}px ${moderateScale(8)}px;
+  padding: 4px 8px;
 `;
 
 const CodeText = styled.Text`
-  color: #f68712;
+  color: #e0680c;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+`;
+
+const ValidityText = styled.Text`
+  color: #8a8f98;
   font-size: ${scaleFont(11)}px;
-  font-weight: 800;
+  margin-left: 8px;
 `;

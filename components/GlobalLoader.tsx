@@ -1,179 +1,153 @@
 import { RootState } from '@/store';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, {
-    Easing,
-    useAnimatedStyle,
-    useSharedValue,
-    withDelay,
-    withRepeat,
-    withSequence,
-    withSpring,
-    withTiming,
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
 } from 'react-native-reanimated';
 import { useSelector } from 'react-redux';
 
-function LoadingDot({ index, visible }: { index: number; visible: boolean }) {
-  const dotOpacity = useSharedValue(0.3);
+/** Don't show the loader at all for work that finishes faster than this — a flash of
+ *  overlay for a 100ms request reads as a glitch, not feedback. */
+const SHOW_DELAY_MS = 200;
+/** Once shown, keep it up at least this long so it never blinks on and straight off. */
+const MIN_VISIBLE_MS = 450;
+const RING_SIZE = 84;
 
-  useEffect(() => {
-    if (visible) {
-      dotOpacity.value = withDelay(
-        index * 200,
-        withRepeat(
-          withSequence(
-            withTiming(1, { duration: 400 }),
-            withTiming(0.3, { duration: 400 }),
-          ),
-          -1,
-          false,
-        ),
-      );
-    } else {
-      dotOpacity.value = withTiming(0.3, { duration: 150 });
-    }
-  }, [visible]);
-
-  const dotStyle = useAnimatedStyle(() => ({
-    opacity: dotOpacity.value,
-  }));
-
-  return (
-    <Animated.View
-      style={[
-        {
-          width: 8,
-          height: 8,
-          borderRadius: 4,
-          backgroundColor: '#f68712',
-          marginHorizontal: 4,
-        },
-        dotStyle,
-      ]}
-    />
-  );
-}
-
+/**
+ * App-wide blocking loader (driven by store/slices/loaderSlice via hooks/useAppLoader):
+ * the brand logo inside a spinning ring on a compact card over a light scrim. Rendered
+ * only while needed, so it never sits invisibly on top of the app between uses.
+ */
 export default function GlobalLoader() {
   const { visible, message } = useSelector((state: RootState) => state.loader);
+  const [mounted, setMounted] = useState(false);
+  const shownAtRef = useRef(0);
+  const unmountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const scale = useSharedValue(0.7);
-  const opacity = useSharedValue(0);
-  const translateX = useSharedValue(-18);
-  const overlayOpacity = useSharedValue(0);
+  const fade = useSharedValue(0);
+  const rotation = useSharedValue(0);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     if (visible) {
-      overlayOpacity.value = withTiming(1, { duration: 200 });
-      opacity.value = withTiming(1, { duration: 250 });
-      // Zoom-in + slide entrance then gentle pulse
-      scale.value = withSequence(
-        withSpring(1, { damping: 14, stiffness: 120 }),
-        withDelay(
-          400,
-          withRepeat(
-            withSequence(
-              withTiming(1.06, { duration: 550, easing: Easing.inOut(Easing.sin) }),
-              withTiming(0.97, { duration: 550, easing: Easing.inOut(Easing.sin) }),
-            ),
-            -1,
-            false,
-          ),
-        ),
-      );
-      translateX.value = withSequence(
-        withTiming(0, { duration: 320, easing: Easing.out(Easing.cubic) }),
-        withDelay(
-          200,
-          withRepeat(
-            withSequence(
-              withTiming(-5, { duration: 420, easing: Easing.inOut(Easing.sin) }),
-              withTiming(0, { duration: 420, easing: Easing.inOut(Easing.sin) }),
-            ),
-            -1,
-            false,
-          ),
-        ),
-      );
-    } else {
-      scale.value = withTiming(0.8, { duration: 180 });
-      opacity.value = withTiming(0, { duration: 180 });
-      overlayOpacity.value = withTiming(0, { duration: 180 });
-      translateX.value = 0;
+      // Shown again mid-fade-out: cancel the pending unmount and fade straight back in.
+      if (unmountTimerRef.current) {
+        clearTimeout(unmountTimerRef.current);
+        unmountTimerRef.current = null;
+      }
+      timer = setTimeout(() => {
+        shownAtRef.current = Date.now();
+        setMounted(true);
+        fade.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
+        rotation.value = 0;
+        rotation.value = withRepeat(withTiming(360, { duration: 900, easing: Easing.linear }), -1, false);
+      }, SHOW_DELAY_MS);
+    } else if (mounted) {
+      const remaining = Math.max(0, MIN_VISIBLE_MS - (Date.now() - shownAtRef.current));
+      timer = setTimeout(() => {
+        fade.value = withTiming(0, { duration: 160 });
+        unmountTimerRef.current = setTimeout(() => {
+          unmountTimerRef.current = null;
+          cancelAnimation(rotation);
+          setMounted(false);
+        }, 170);
+      }, remaining);
     }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  const overlayStyle = useAnimatedStyle(() => ({
-    opacity: overlayOpacity.value,
+  const scrimStyle = useAnimatedStyle(() => ({ opacity: fade.value }));
+  const cardStyle = useAnimatedStyle(() => ({
+    opacity: fade.value,
+    transform: [{ scale: 0.92 + fade.value * 0.08 }],
   }));
+  const ringStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
 
-  const logoStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [
-      { scale: scale.value },
-      { translateX: translateX.value },
-    ],
-  }));
+  if (!mounted) return null;
 
-  const messageOpacityStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-  }));
-
+  const label = message || 'Please wait…';
   return (
-    <Animated.View
-      pointerEvents={visible ? 'auto' : 'none'}
-      style={[StyleSheet.absoluteFill, styles.overlay, overlayStyle]}
-    >
-      <View style={styles.card}>
-        <Animated.Image
-          source={require('../assets/images/logo.png')}
-          style={[styles.logo, logoStyle]}
-          resizeMode="contain"
-        />
-        {!!message && (
-          <Animated.Text style={[styles.messageText, messageOpacityStyle]}>
-            {message}
-          </Animated.Text>
-        )}
-        <View style={styles.dotsRow}>
-          {[0, 1, 2].map((i) => (
-            <LoadingDot key={i} index={i} visible={visible} />
-          ))}
+    <Animated.View style={[StyleSheet.absoluteFill, styles.scrim, scrimStyle]} pointerEvents="auto">
+      <Animated.View
+        style={[styles.card, cardStyle]}
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel={label}
+        accessibilityLiveRegion="polite"
+      >
+        <View style={styles.ringWrap}>
+          <View style={styles.ringTrack} />
+          <Animated.View style={[styles.ringArc, ringStyle]} />
+          <Animated.Image source={require('../assets/images/logo.png')} style={styles.logo} resizeMode="contain" />
         </View>
-      </View>
+        <Animated.Text style={styles.message} numberOfLines={2}>
+          {label}
+        </Animated.Text>
+      </Animated.View>
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
-    backgroundColor: 'rgba(0,0,0,0.55)',
+  scrim: {
+    backgroundColor: 'rgba(24, 18, 12, 0.32)',
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 9999,
+    elevation: 9999,
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 20,
-    paddingVertical: 32,
-    paddingHorizontal: 40,
+    borderRadius: 22,
+    paddingTop: 26,
+    paddingBottom: 20,
+    paddingHorizontal: 28,
     alignItems: 'center',
-    elevation: 12,
-    minWidth: 180,
+    minWidth: 168,
+    maxWidth: 260,
+    shadowColor: '#000',
+    shadowOpacity: 0.14,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 14,
+  },
+  ringWrap: {
+    width: RING_SIZE,
+    height: RING_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ringTrack: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: RING_SIZE / 2,
+    borderWidth: 3,
+    borderColor: '#fdebd8',
+  },
+  ringArc: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: RING_SIZE / 2,
+    borderWidth: 3,
+    borderColor: 'transparent',
+    borderTopColor: '#f68712',
+    borderRightColor: '#f68712',
   },
   logo: {
-    width: 110,
-    height: 110,
+    width: RING_SIZE - 26,
+    height: RING_SIZE - 26,
   },
-  messageText: {
-    marginTop: 14,
+  message: {
+    marginTop: 16,
     fontSize: 14,
     fontWeight: '600',
-    color: '#282939',
+    color: '#2b2f3a',
     textAlign: 'center',
-  },
-  dotsRow: {
-    flexDirection: 'row',
-    marginTop: 18,
-    alignItems: 'center',
   },
 });
