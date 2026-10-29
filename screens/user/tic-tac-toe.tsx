@@ -2,6 +2,7 @@ import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { AppStrings } from '@/constants/appStrings';
 import React, { useMemo, useState } from 'react';
 import { Animated, Easing, Modal } from 'react-native';
+import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import styled from 'styled-components/native';
 import {
   InterstitialAd,
@@ -48,6 +49,14 @@ const getWinner = (board: Cell[]): Player | null => {
     }
   }
   return null;
+};
+
+const getWinLine = (board: Cell[]): number[] => {
+  for (const line of winLines) {
+    const [a, b, c] = line;
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) return line;
+  }
+  return [];
 };
 
 const getAvailableMoves = (board: Cell[]): number[] => {
@@ -128,8 +137,16 @@ export default function TicTacToeScreen() {
   const celebrationTranslateY = useMemo(() => new Animated.Value(24), []);
   const [isAdLoaded, setIsAdLoaded] = useState(false);
 
+  const [score, setScore] = useState({ X: 0, O: 0, draw: 0 });
+
   const winner = useMemo(() => getWinner(board), [board]);
+  const winLine = useMemo(() => getWinLine(board), [board]);
   const isDraw = useMemo(() => !winner && board.every((cell) => cell !== null), [board, winner]);
+
+  React.useEffect(() => {
+    if (winner) setScore((prev) => ({ ...prev, [winner]: prev[winner] + 1 }));
+    else if (isDraw) setScore((prev) => ({ ...prev, draw: prev.draw + 1 }));
+  }, [winner, isDraw]);
 
   const handleRestartRequest = () => {
 
@@ -285,11 +302,13 @@ export default function TicTacToeScreen() {
     : isDraw
       ? 'Draw game'
       : mode === 'one'
-        ? 'You: X | Computer: O'
-        : `Turn: ${turn}`;
+        ? 'Your move — you are X'
+        : `Player ${turn}'s turn`;
 
   const celebrationTitle = winner
-    ? `Player ${winner} Wins!`
+    ? mode === 'one'
+      ? winner === 'X' ? 'You Win! 🎉' : 'Computer Wins!'
+      : `Player ${winner} Wins!`
     : isDraw
       ? 'It is a Draw!'
       : '';
@@ -304,26 +323,59 @@ export default function TicTacToeScreen() {
     <Container>
       <PageHeader title="Tic Tac Toe" />
 
-      <Content>
+      <Content contentContainerStyle={{ padding: 16, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
         <ModeRow>
-          <ModeButton active={mode === 'one'} onPress={() => { setMode('one'); resetGame(); }}>
+          <ModeButton active={mode === 'one'} onPress={() => { setMode('one'); resetGame(); setScore({ X: 0, O: 0, draw: 0 }); }}>
             <ModeButtonText active={mode === 'one'}>1 Player</ModeButtonText>
           </ModeButton>
-          <ModeButton active={mode === 'two'} onPress={() => { setMode('two'); resetGame(); }}>
+          <ModeButton active={mode === 'two'} onPress={() => { setMode('two'); resetGame(); setScore({ X: 0, O: 0, draw: 0 }); }}>
             <ModeButtonText active={mode === 'two'}>2 Player</ModeButtonText>
           </ModeButton>
         </ModeRow>
 
-        <StatusText>{statusText}</StatusText>
-        <ChanceText>{AppStrings.game.freeRestartLabel.replace('{COUNT}', String(freeRestartsLeft))}</ChanceText>
+        <ScoreRow>
+          <ScoreCard active={!winner && !isDraw && turn === 'X'}>
+            <PieceX size={30} />
+            <ScoreLabel>{mode === 'one' ? 'You' : 'Player X'}</ScoreLabel>
+            <ScoreValue>{score.X}</ScoreValue>
+          </ScoreCard>
+          <ScoreCard active={false}>
+            <DrawBadge><DrawBadgeText>=</DrawBadgeText></DrawBadge>
+            <ScoreLabel>Draws</ScoreLabel>
+            <ScoreValue>{score.draw}</ScoreValue>
+          </ScoreCard>
+          <ScoreCard active={!winner && !isDraw && turn === 'O'}>
+            <PieceO size={30} />
+            <ScoreLabel>{mode === 'one' ? 'Computer' : 'Player O'}</ScoreLabel>
+            <ScoreValue>{score.O}</ScoreValue>
+          </ScoreCard>
+        </ScoreRow>
 
-        <Board>
-          {board.map((cell, index) => (
-            <CellButton key={index} onPress={() => handleCellPress(index)}>
-              <CellText>{cell || ''}</CellText>
-            </CellButton>
-          ))}
-        </Board>
+        <StatusText>{statusText}</StatusText>
+
+        <BoardBase>
+          <BoardTray>
+            {board.map((cell, index) => {
+              const isWinCell = winLine.includes(index);
+              return (
+                <CellSlot key={index}>
+                  <TileButton
+                    activeOpacity={0.85}
+                    onPress={() => handleCellPress(index)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Cell ${index + 1}${cell ? `, ${cell}` : ', empty'}`}
+                  >
+                    <TileBase win={isWinCell}>
+                      <TileFace win={isWinCell}>
+                        {cell ? <AnimatedPiece player={cell} /> : null}
+                      </TileFace>
+                    </TileBase>
+                  </TileButton>
+                </CellSlot>
+              );
+            })}
+          </BoardTray>
+        </BoardBase>
 
         {showCelebration ? (
           <CelebrationWrap
@@ -341,9 +393,10 @@ export default function TicTacToeScreen() {
           </CelebrationWrap>
         ) : null}
 
-        <ResetButton onPress={handleRestartRequest}>
-          <ResetText>Restart Game</ResetText>
+        <ResetButton onPress={handleRestartRequest} activeOpacity={0.85}>
+          <ResetText>{winner || isDraw ? 'Play Again' : 'Restart Game'}</ResetText>
         </ResetButton>
+        <ChanceText>{AppStrings.game.freeRestartLabel.replace('{COUNT}', String(freeRestartsLeft))}</ChanceText>
 
         <Modal
           visible={showWatchAdModal}
@@ -372,83 +425,228 @@ export default function TicTacToeScreen() {
   );
 }
 
+/** Extruded "3D" X: a darker copy stacked below the glossy face gives it depth. */
+function PieceX({ size }: { size: number | string }) {
+  const bar = (fill: string, dy: number, key: string) => (
+    <G key={key} transform={`translate(0 ${dy})`}>
+      <Rect x={12} y={39} width={76} height={22} rx={11} fill={fill} transform="rotate(45 50 50)" />
+      <Rect x={12} y={39} width={76} height={22} rx={11} fill={fill} transform="rotate(-45 50 50)" />
+    </G>
+  );
+  return (
+    <Svg width={size} height={size} viewBox="0 0 100 100">
+      <Defs>
+        <LinearGradient id="xFace" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor="#ff9a6b" />
+          <Stop offset="0.55" stopColor="#f4511e" />
+          <Stop offset="1" stopColor="#c62828" />
+        </LinearGradient>
+      </Defs>
+      <Ellipse cx={52} cy={92} rx={30} ry={5} fill="#000" opacity={0.12} />
+      {[7, 5, 3].map((dy) => bar('#8e1d12', dy, `s${dy}`))}
+      {bar('url(#xFace)', 0, 'face')}
+      <Rect x={18} y={42} width={64} height={5} rx={2.5} fill="#fff" opacity={0.35} transform="rotate(45 50 50)" />
+      <Rect x={18} y={42} width={64} height={5} rx={2.5} fill="#fff" opacity={0.35} transform="rotate(-45 50 50)" />
+    </Svg>
+  );
+}
+
+/** Extruded "3D" O: a torus-like ring with a darker base ring and a specular arc. */
+function PieceO({ size }: { size: number | string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 100 100">
+      <Defs>
+        <LinearGradient id="oFace" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor="#7fd6ff" />
+          <Stop offset="0.5" stopColor="#2f8fe8" />
+          <Stop offset="1" stopColor="#1a4fb5" />
+        </LinearGradient>
+      </Defs>
+      <Ellipse cx={51} cy={92} rx={30} ry={5} fill="#000" opacity={0.12} />
+      {[7, 5, 3].map((dy) => (
+        <Circle key={dy} cx={50} cy={47 + dy} r={29} stroke="#123a85" strokeWidth={18} fill="none" />
+      ))}
+      <Circle cx={50} cy={47} r={29} stroke="url(#oFace)" strokeWidth={18} fill="none" />
+      <Circle cx={50} cy={47} r={20} stroke="#0b2a66" strokeOpacity={0.25} strokeWidth={2} fill="none" />
+      <Path d="M 27 36 A 26 26 0 0 1 50 22" stroke="#fff" strokeOpacity={0.55} strokeWidth={5} strokeLinecap="round" fill="none" />
+    </Svg>
+  );
+}
+
+function AnimatedPiece({ player }: { player: Player }) {
+  const scale = useMemo(() => new Animated.Value(0.3), []);
+  const drop = useMemo(() => new Animated.Value(-18), []);
+  React.useEffect(() => {
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 1, friction: 5, tension: 140, useNativeDriver: true }),
+      Animated.spring(drop, { toValue: 0, friction: 6, tension: 120, useNativeDriver: true }),
+    ]).start();
+  }, [scale, drop]);
+  return (
+    <Animated.View style={{ width: '72%', aspectRatio: 1, transform: [{ translateY: drop }, { scale }] }}>
+      {player === 'X' ? <PieceX size="100%" /> : <PieceO size="100%" />}
+    </Animated.View>
+  );
+}
+
 const Container = styled(PageScreen)`
   flex: 1;
-  background-color: #fff;
+  background-color: #f6f7fb;
 `;
 
-
-
-
-
-const Content = styled.View`
+const Content = styled.ScrollView`
   flex: 1;
-  padding: 16px;
 `;
 
 const ModeRow = styled.View`
   flex-direction: row;
-  background-color: #f5f5f5;
-  border-radius: 10px;
+  background-color: #eceef4;
+  border-radius: 14px;
   padding: 4px;
 `;
 
 const ModeButton = styled.TouchableOpacity<{ active: boolean }>`
   flex: 1;
-  padding: 10px;
-  border-radius: 8px;
+  padding: 11px;
+  border-radius: 11px;
   align-items: center;
   background-color: ${(props: any) => (props.active ? '#f68712' : 'transparent')};
+  elevation: ${(props: any) => (props.active ? 3 : 0)};
+  shadow-color: #f68712;
+  shadow-opacity: ${(props: any) => (props.active ? 0.35 : 0)};
+  shadow-radius: 6px;
+  shadow-offset: 0px 3px;
 `;
 
 const ModeButtonText = styled.Text<{ active: boolean }>`
-  color: ${(props: any) => (props.active ? '#fff' : '#555')};
+  color: ${(props: any) => (props.active ? '#fff' : '#5b6275')};
   font-weight: 700;
   font-size: 14px;
 `;
 
-const StatusText = styled.Text`
+const ScoreRow = styled.View`
+  flex-direction: row;
   margin-top: 16px;
-  margin-bottom: 8px;
-  font-size: 16px;
+`;
+
+const ScoreCard = styled.View<{ active: boolean }>`
+  flex: 1;
+  align-items: center;
+  padding: 10px 6px;
+  margin: 0 4px;
+  border-radius: 14px;
+  background-color: #fff;
+  border-width: 1.5px;
+  border-color: ${(props: any) => (props.active ? '#f68712' : '#eceef4')};
+  elevation: 2;
+  shadow-color: #1f2a44;
+  shadow-opacity: 0.08;
+  shadow-radius: 6px;
+  shadow-offset: 0px 2px;
+`;
+
+const ScoreLabel = styled.Text`
+  margin-top: 4px;
+  font-size: 12px;
   font-weight: 600;
-  color: #333;
+  color: #6b7280;
+`;
+
+const ScoreValue = styled.Text`
+  margin-top: 2px;
+  font-size: 20px;
+  font-weight: 800;
+  color: #1f2a44;
+`;
+
+const DrawBadge = styled.View`
+  width: 30px;
+  height: 30px;
+  border-radius: 15px;
+  align-items: center;
+  justify-content: center;
+  background-color: #eceef4;
+`;
+
+const DrawBadgeText = styled.Text`
+  font-size: 18px;
+  font-weight: 800;
+  color: #6b7280;
+`;
+
+const StatusText = styled.Text`
+  margin-top: 18px;
+  margin-bottom: 14px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2a44;
   text-align: center;
 `;
 
 const ChanceText = styled.Text`
-  margin-bottom: 12px;
-  font-size: 13px;
+  margin-top: 10px;
+  font-size: 12px;
   font-weight: 600;
-  color: #666;
+  color: #8a90a2;
   text-align: center;
 `;
 
-const Board = styled.View`
+/* The darker base peeking out under the tray gives the board its raised edge. */
+const BoardBase = styled.View`
+  width: 100%;
+  border-radius: 24px;
+  background-color: #d9681a;
+  padding-bottom: 8px;
+  elevation: 8;
+  shadow-color: #7a3a0c;
+  shadow-opacity: 0.35;
+  shadow-radius: 12px;
+  shadow-offset: 0px 8px;
+`;
+
+const BoardTray = styled.View`
   width: 100%;
   aspect-ratio: 1;
   flex-direction: row;
   flex-wrap: wrap;
-  border-width: 1px;
-  border-color: #e6e6e6;
-  border-radius: 12px;
-  overflow: hidden;
+  padding: 8px;
+  border-radius: 24px;
+  background-color: #f68712;
+  border-top-width: 2px;
+  border-color: #ffb36b;
 `;
 
-const CellButton = styled.TouchableOpacity`
+const CellSlot = styled.View`
   width: 33.3333%;
   height: 33.3333%;
+  padding: 5px;
+`;
+
+const TileButton = styled.TouchableOpacity`
+  flex: 1;
+`;
+
+const TileBase = styled.View<{ win: boolean }>`
+  flex: 1;
+  border-radius: 16px;
+  padding-bottom: 6px;
+  background-color: ${(props: any) => (props.win ? '#e0a400' : '#c9ccd8')};
+`;
+
+const TileFace = styled.View<{ win: boolean }>`
+  flex: 1;
+  border-radius: 16px;
   align-items: center;
   justify-content: center;
-  border-width: 0.5px;
-  border-color: #e6e6e6;
-  background-color: #fff;
+  background-color: ${(props: any) => (props.win ? '#fff4c7' : '#ffffff')};
+  border-top-width: 2px;
+  border-color: ${(props: any) => (props.win ? '#fffbe8' : '#ffffff')};
 `;
 
 const CelebrationWrap = styled(Animated.View) <{ isDraw: boolean }>`
-  margin-top: 14px;
-  border-radius: 12px;
-  padding: 12px;
+  margin-top: 18px;
+  border-radius: 14px;
+  padding: 14px;
   align-items: center;
   background-color: ${(props: any) => (props.isDraw ? '#eaf2ff' : '#eaf9f0')};
   border-width: 1px;
@@ -456,7 +654,7 @@ const CelebrationWrap = styled(Animated.View) <{ isDraw: boolean }>`
 `;
 
 const CelebrationTitle = styled.Text`
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 800;
   color: #1f2a44;
 `;
@@ -468,24 +666,20 @@ const CelebrationSubTitle = styled.Text`
   color: #4b5878;
 `;
 
-const CellText = styled.Text`
-  font-size: 40px;
-  font-weight: 700;
-  color: #282939;
-`;
-
 const ResetButton = styled.TouchableOpacity`
   background-color: #f68712;
   margin-top: 18px;
-  padding: 14px;
-  border-radius: 10px;
+  padding: 15px;
+  border-radius: 14px;
   align-items: center;
+  border-bottom-width: 4px;
+  border-color: #c9620a;
 `;
 
 const ResetText = styled.Text`
   color: #fff;
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 800;
 `;
 
 const ModalOverlay = styled.View`

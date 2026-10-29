@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
@@ -219,7 +220,17 @@ export function buildInvoiceHtml(order: InvoiceOrder, customer: InvoiceCustomer 
 /** Renders the invoice to a PDF and opens the share sheet (or returns the file path when
  *  sharing isn't available on this device). */
 export async function shareInvoicePdf(order: InvoiceOrder, customer?: InvoiceCustomer): Promise<{ uri: string; shared: boolean }> {
-  const { uri } = await Print.printToFileAsync({ html: buildInvoiceHtml(order, customer), width: 595, height: 842 });
+  const printed = await Print.printToFileAsync({ html: buildInvoiceHtml(order, customer), width: 595, height: 842 });
+  // expo-print names the file with a random UUID — give it a readable name for the share sheet.
+  let uri = printed.uri;
+  try {
+    const target = `${FileSystem.cacheDirectory}Invoice-${invoiceNumber(order).replace(/[^\w-]+/g, '_')}.pdf`;
+    await FileSystem.deleteAsync(target, { idempotent: true });
+    await FileSystem.moveAsync({ from: printed.uri, to: target });
+    uri = target;
+  } catch {
+    // Keep the original file if the rename fails.
+  }
   if (!(await Sharing.isAvailableAsync())) return { uri, shared: false };
   await Sharing.shareAsync(uri, {
     mimeType: 'application/pdf',

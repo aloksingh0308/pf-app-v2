@@ -10,6 +10,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useDispatch } from "react-redux";
 import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../services/alertService";
+import { errorReason, track } from "../services/analytics";
 import { AppAuthUser, authService, OtpConfirmationResult } from "../services/authService";
 import { OTP_CONFIG } from "../config/otp";
 import { storageService } from "../services/storageService";
@@ -90,6 +91,7 @@ const LoginScreen = () => {
       dispatch(setLoading(true));
 
       const result = await authService.sendPhoneOtp(e164Phone);
+      track('otp_requested', { result: result.status });
       if (result.status === 'logged-in') {
         // Verified without an OTP (MSG91 invisible verification on mobile data).
         await finishLogin(result.user);
@@ -115,6 +117,7 @@ const LoginScreen = () => {
         ? 'Network error while requesting OTP. Check your internet connection and retry.'
         : String(error?.message || 'Failed to send OTP. Please try again.');
       dispatch(setError(errorMessage));
+      track('otp_request_failed', { reason: errorReason(error), network: isNetworkError });
       showErrorAlert(error, errorMessage, 'OTP Failed');
     }
   };
@@ -153,6 +156,7 @@ const LoginScreen = () => {
             ? 'OTP expired. Please request a new one.'
             : 'OTP verification failed. Please try again.';
       dispatch(setError(errorMessage));
+      track('otp_verify_failed', { reason: errorReason(error) });
       showErrorAlert(error, errorMessage, 'Verification Failed');
     }
   };
@@ -169,6 +173,7 @@ const LoginScreen = () => {
       if (error?.status === 429 && error?.retryAfterSeconds) setResendIn(Math.min(Number(error.retryAfterSeconds), 24 * 60 * 60));
       const message = String(error?.message || "Couldn't resend the OTP. Please try again.");
       dispatch(setError(message));
+      track('otp_request_failed', { reason: errorReason(error), resend: true });
       showErrorAlert(error, message, 'Resend Failed');
     } finally {
       setResending(false);
@@ -209,6 +214,7 @@ const LoginScreen = () => {
       }
 
       dispatch(setUser(userProfile));
+      track('login', { method: 'phone' });
       await storageService.saveUserProfile(userProfile);
       setLoadingState(false);
       dispatch(setLoading(false));
@@ -218,6 +224,7 @@ const LoginScreen = () => {
       hideGlobalLoader();
       const errorMessage = "Logged in, but your profile couldn't be loaded. Please try again.";
       dispatch(setError(errorMessage));
+      track('login_failed', { reason: errorReason(error), stage: 'profile_load' });
       showErrorAlert(error, errorMessage, 'Login Failed');
     }
   };

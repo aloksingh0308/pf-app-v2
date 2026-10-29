@@ -1,6 +1,7 @@
 import { connectivity, isNetworkFailure } from '../services/connectivity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_CONFIG } from '../config/api';
+import { analyticsService } from '../services/analytics';
 
 const AUTH_TOKEN_KEY = 'app_auth_token';
 
@@ -91,6 +92,7 @@ async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: str
     // fallback screen, so callers can skip their own error popups for this case.
     if (isNetworkFailure(error)) {
       connectivity.reportServer(false);
+      analyticsService.networkError(method, path);
       throw new ApiError(0, 'Network request failed', NETWORK_ERROR_CODE);
     }
     throw error;
@@ -106,6 +108,7 @@ async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: str
   }
   if (!res.ok || !json || json.success === false) {
     const failure = json as ApiFailure | null;
+    analyticsService.apiError(method, path, res.status, failure?.code, failure?.message || (failure ? undefined : `unreadable reply: ${text.slice(0, 60)}`));
     if (res.status === 429) {
       startRateLimitCooldown(res, failure?.retryAfterSeconds);
       if (__DEV__) console.warn(`[api] ${method} ${path} → 429; pausing background requests for ${Math.ceil(rateLimitRemainingMs() / 1000)}s`);
@@ -139,14 +142,16 @@ export const apiClient = {
     if (localUriOrUrl.startsWith('http://') || localUriOrUrl.startsWith('https://')) {
       return localUriOrUrl;
     }
-    const response = await fetch(localUriOrUrl);
-    const blob = await response.blob();
-    const extension = localUriOrUrl.split('.').pop()?.split('?')[0] || 'jpg';
+    // React Native sends a local file as a { uri, name, type } part — reading it into a Blob
+    // first (fetch(uri).blob()) isn't reliable on Android and broke profile photo uploads.
+    const rawExtension = (localUriOrUrl.split('.').pop()?.split('?')[0] || '').toLowerCase();
+    const extension = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(rawExtension) ? rawExtension : 'jpg';
+    const mimeType = extension === 'jpg' ? 'image/jpeg' : `image/${extension}`;
     const formData = new FormData();
     // Picks the storage folder: users/<account>/profile | reviews (backend storage/uploadPaths.ts).
     const purpose = filenamePrefix === 'profile' ? 'profile' : filenamePrefix === 'review' ? 'reviews' : 'general';
     formData.append('purpose', purpose);
-    formData.append('file', blob, `${filenamePrefix}-${Date.now()}.${extension}`);
+    formData.append('file', { uri: localUriOrUrl, name: `${filenamePrefix}-${Date.now()}.${extension}`, type: mimeType } as unknown as Blob);
     const result = await request<{ url: string }>('POST', '/public/customers/uploads/image', formData, true);
     return result.url;
   },

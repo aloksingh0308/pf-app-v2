@@ -64,6 +64,8 @@ export interface CouponItem {
   influencerCycle?: number;
   /** Service types this coupon is restricted to — empty means valid for every type. */
   applicableOrderTypes: BackendOrderType[];
+  /** Set when this is a restaurant offer applied at checkout (evaluateOffers), not a coupon. */
+  offerId?: string;
 }
 
 /** Whether a coupon can be used for the service type the customer picked (Dine In /

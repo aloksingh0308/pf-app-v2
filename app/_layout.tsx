@@ -2,7 +2,7 @@ import { useFonts } from 'expo-font';
 import * as Notifications from 'expo-notifications';
 import { Stack, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, TouchableOpacity } from 'react-native';
 import 'react-native-reanimated';
 
@@ -11,11 +11,15 @@ import AppStatusProvider from '@/components/AppStatusProvider';
 import ConnectivityGate from '@/components/ConnectivityGate';
 import GlobalLoader from '@/components/GlobalLoader';
 import { useColorScheme } from '@/hooks/useColorScheme';
+import { analyticsService } from '@/services/analytics';
 import { authService } from '@/services/authService';
 import { notificationService } from '@/services/notificationService';
 import { hydrateCachedLocationAddress, warmupUserLocationCache } from '@/services/locationCacheService';
 import { storageService } from '@/services/storageService';
 import { userService } from '@/services/userService';
+import { showAlert } from '@/services/alertService';
+import { getRestaurants } from '@/services/restaurantService';
+import { clearPendingReferralCode, getPendingReferralCode, onPendingLinkChange, takePendingRestaurant } from '@/utils/deepLinks';
 import { AppDispatch, RootState, store } from '@/store';
 import { logout, setUser } from '@/store/slices/authSlice';
 import { Settings } from 'react-native-fbsdk-next';
@@ -47,7 +51,62 @@ function RootLayoutContent() {
   const pathnameRef = useRef(pathname);
   useEffect(() => {
     pathnameRef.current = pathname;
+    analyticsService.screen(pathname);
   }, [pathname]);
+
+  useEffect(() => {
+    analyticsService.setUser(isAuthenticated && user?.uid ? user.uid : null);
+  }, [isAuthenticated, user?.uid]);
+
+  useEffect(() => {
+    // Uncaught JS errors → GA (event app_exception), then the default handler as before.
+    const errorUtils = (global as any).ErrorUtils;
+    const previous = errorUtils?.getGlobalHandler?.();
+    if (!errorUtils?.setGlobalHandler) return;
+    errorUtils.setGlobalHandler((error: unknown, isFatal?: boolean) => {
+      analyticsService.exception(error, Boolean(isFatal));
+      previous?.(error, isFatal);
+    });
+    return () => errorUtils.setGlobalHandler(previous);
+  }, []);
+
+  /** Opens a restaurant parked by a shared link (app/+native-intent.tsx). Only called once the
+   *  user is signed in and the auth redirect has landed on the tabs — signed-out users stay on
+   *  login and the link waits there until they sign in. */
+  const openPendingRestaurant = useCallback(async () => {
+    const pending = await takePendingRestaurant();
+    if (!pending) return;
+    try {
+      const restaurants = await getRestaurants();
+      const match = restaurants.find(
+        (r) => r.orgSlug === pending.orgSlug && String(r.branchCode || '').toLowerCase() === pending.branchCode.toLowerCase()
+      );
+      if (!match || match.available === false) {
+        showAlert('Restaurant unavailable', 'This restaurant is not taking orders on Prayagi Foodwala right now.');
+        return;
+      }
+      router.push({ pathname: '/user/restaurant-details', params: { restaurant: JSON.stringify(match), categoryId: '0' } } as never);
+    } catch {
+      showAlert('Unable to open restaurant', 'Please check your connection and try again.');
+    }
+  }, []);
+
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const isNavReadyRef = useRef(false);
+  isNavReadyRef.current = !isCheckingAuth && isSplashDelayDone;
+
+  // A link tapped while the app is already running (cold starts are handled by the auth
+  // redirect below once it has decided where to land).
+  useEffect(() => onPendingLinkChange(() => {
+    if (!isNavReadyRef.current) return;
+    if (isAuthenticatedRef.current) {
+      void openPendingRestaurant();
+      // Invites are for new sign-ups only — nothing to do for a signed-in customer.
+      void clearPendingReferralCode();
+    }
+    // Signed out: already on login / complete-profile, which pick up the pending link.
+  }), [openPendingRestaurant]);
 
   useEffect(() => {
     const touchableDefaults = (TouchableOpacity as any).defaultProps || {};
@@ -288,6 +347,11 @@ function RootLayoutContent() {
         }
 
         router.replace('/(tabs)' as never);
+        // After the replace has settled, so the restaurant is pushed on top of Home.
+        setTimeout(() => {
+          void openPendingRestaurant();
+          void getPendingReferralCode().then((code) => { if (code) void clearPendingReferralCode(); });
+        }, 300);
       } else if (incompleteSession) {
         // Verified phone, no name yet — finish sign-up (see incompleteSession above).
         if (pathnameRef.current !== '/complete-profile') {
@@ -301,7 +365,7 @@ function RootLayoutContent() {
     // must only fire on auth-state changes, not on every navigation, or an
     // authenticated user gets force-redirected to the home tab on every route
     // change (e.g. Edit Profile bouncing straight back to Home).
-  }, [dispatch, incompleteSession, isAuthenticated, isCheckingAuth, isSplashDelayDone, user?.role, user?.uid]);
+  }, [dispatch, incompleteSession, isAuthenticated, isCheckingAuth, isSplashDelayDone, openPendingRestaurant, user?.role, user?.uid]);
 
   if (!isAppShellReady) {
     return <SplashScreen />;
@@ -322,6 +386,9 @@ function RootLayoutContent() {
             <Stack.Screen name="(tabs)" />
             {/* No swipe-back to checkout after placing an order; back goes Home (see order-success). */}
             <Stack.Screen name="order-success" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="user/chess" />
+            <Stack.Screen name="user/ludo" />
+            <Stack.Screen name="user/sudoku" />
             <Stack.Screen name="user/cart" />
             <Stack.Screen name="user/checkout" />
             <Stack.Screen name="user/deals" />

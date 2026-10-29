@@ -1,5 +1,6 @@
 import NetInfo from '@react-native-community/netinfo';
 import { API_CONFIG } from '../config/api';
+import { analyticsService } from './analytics';
 
 /**
  * App-wide connectivity, as two separate problems the customer sees differently:
@@ -32,6 +33,7 @@ function publish() {
       : 'online';
   if (next === status) return;
   status = next;
+  if (status !== 'online') analyticsService.connectivityLost(status);
   listeners.forEach((listener) => listener(status));
 }
 

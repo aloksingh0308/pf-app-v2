@@ -58,9 +58,11 @@ const ORDER_SUCCESS_BANNER_AD_UNIT_ID = String(
 ).trim();
 
 export default function OrderSuccessScreen() {
-  const { orderId, isUpdate, isScheduled, scheduledDateLabel, scheduledSlotLabel } = useLocalSearchParams<{
+  const { orderId, isUpdate, isScheduled, scheduledDateLabel, scheduledSlotLabel, paymentPending } = useLocalSearchParams<{
     orderId?: string;
     isUpdate?: string;
+    /** "true" when an online payment went through but is still being confirmed. */
+    paymentPending?: string;
     isScheduled?: string;
     scheduledDateLabel?: string;
     scheduledSlotLabel?: string;
@@ -230,7 +232,9 @@ export default function OrderSuccessScreen() {
     ? 'Your reservation has been placed successfully.'
     : isOrderUpdate
       ? 'Your order changes were saved successfully.'
-      : 'Sit tight — the restaurant has received your order.';
+      : String(paymentPending || '').toLowerCase() === 'true'
+        ? 'Payment received — we\u2019re confirming it with your bank. The restaurant gets your order as soon as it\u2019s confirmed.'
+        : 'Sit tight — the restaurant has received your order.';
 
   return (
     <PageScreen style={styles.page}>

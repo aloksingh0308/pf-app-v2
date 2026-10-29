@@ -15,7 +15,7 @@ export const AppStrings = {
     codeLabel: 'Your Referral Code',
     countLabel: 'Successful Referrals',
     shareAction: 'Refer & Earn',
-    shareTemplate: "Join Prayagi FoodWala using my referral code {CODE}. When you sign up with my code, I get referral rewards. Download now! https://play.google.com/store/apps/details?id=com.alok0308.praygagifoodwala",
+    shareTemplate: "Join Prayagi FoodWala using my referral code {CODE}. Tap the link to download the app — the code is filled in for you when you sign up:",
   },
   common: {
     login: 'Login',

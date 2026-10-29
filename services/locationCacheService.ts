@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { AppDispatch } from '../store';
+import { track } from './analytics';
 import { setLocation, setLocationAddress } from '../store/slices/locationSlice';
 
 const LOCATION_CACHE_KEY = 'hb_user_location_cache_v1';
@@ -271,12 +272,15 @@ const refreshUserLocationNow = async (options?: {
     }
 
     if (status !== 'granted') {
+      // Runs on every app open/foreground — once a day per status is enough.
+      track('location_problem', { reason: `permission_${status}` }, { throttleKey: String(status), throttleMs: 24 * 60 * 60 * 1000 });
       return null;
     }
 
     const position = await getPositionWithFallback();
     if (revision !== locationRevision) return inMemoryCache;
     if (!position?.coords) {
+      track('location_problem', { reason: 'no_position_fix' }, { throttleKey: 'no_fix', throttleMs: 60 * 60 * 1000 });
       return null;
     }
 

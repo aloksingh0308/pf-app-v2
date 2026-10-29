@@ -59,10 +59,13 @@ export default function MoreScreen() {
           />
         </SectionCard>
 
-        <SectionTitle>Celebrations & Fun</SectionTitle>
+        <SectionTitle>Games & Fun</SectionTitle>
         <SectionCard>
-          <ListRow icon="balloon-outline" title="Customise Your Party" subtitle="Party menus and decoration packages" onPress={() => go('/user/party-booking')} />
+          {/* Hidden for now: Customise Your Party ('/user/party-booking') */}
           <ListRow icon="game-controller-outline" title="Tic Tac Toe" subtitle="Play a quick game" onPress={() => go('/user/tic-tac-toe')} />
+          <ListRow icon="extension-puzzle-outline" title="Chess" subtitle="Challenge the computer or a friend" onPress={() => go('/user/chess')} />
+          <ListRow icon="dice-outline" title="Ludo" subtitle="Roll the dice with friends or the computer" onPress={() => go('/user/ludo')} />
+          <ListRow icon="grid-outline" title="Sudoku" subtitle="Fill the grid, train your brain" onPress={() => go('/user/sudoku')} />
         </SectionCard>
 
         <SectionTitle>{AppStrings.common.legalSupport}</SectionTitle>

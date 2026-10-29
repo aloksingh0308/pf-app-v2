@@ -1,4 +1,6 @@
 import HomeHeader from '@/components/HomeHeader';
+import NoRestaurantsHere from '@/components/NoRestaurantsHere';
+import { useCityName } from '@/hooks/useCityName';
 import AppImage from '@/components/AppImage';
 import { RestaurantCard, RestaurantMiniCard } from '@/components/RestaurantCard';
 import { OfferCard } from '@/components/OfferCard';
@@ -188,16 +190,10 @@ export default function HomeScreen() {
   // below by matching its label against each restaurant's own cuisine/food-type tags.
   const [showFilters, setShowFilters] = useState(false);
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState('0');
-  const filteredRestaurants = useMemo(() => {
-    if (selectedCategoryId === '0') return foodFilteredRestaurants;
-    const category = homeCategories.find((c) => c.id === selectedCategoryId);
-    const keyword = String(category?.label || '').trim().toLowerCase().replace(/s$/, '');
-    if (!keyword) return foodFilteredRestaurants;
-    return foodFilteredRestaurants.filter((r) => String(r.cuisine || r.desc || '').toLowerCase().includes(keyword));
-  }, [foodFilteredRestaurants, selectedCategoryId, homeCategories]);
+  const filteredRestaurants = foodFilteredRestaurants;
   const selectedLatitude = useSelector((state: RootState) => state.location.latitude);
   const selectedLongitude = useSelector((state: RootState) => state.location.longitude);
+  const cityName = useCityName(selectedLatitude, selectedLongitude);
   const deviceCoords = useMemo<Coordinates | null>(() => (
     selectedLatitude != null && selectedLongitude != null
       && Number.isFinite(selectedLatitude) && Number.isFinite(selectedLongitude)
@@ -574,42 +570,6 @@ export default function HomeScreen() {
     }, [])
   );
 
-  // useEffect(() => {
-  //   const loadHomeCategories = async () => {
-  //     try {
-  //       const categoriesSnap = await getDocs(collection(db, getCollectionName(COLLECTION_NAMES.CATEGORIES)));
-  //       const categories = categoriesSnap.docs
-  //         .map((docSnap) => {
-  //           const data = docSnap.data() as Record<string, unknown>;
-  //           return {
-  //             id: String(data.id || docSnap.id).trim(),
-  //             label: String(data.name || '').trim(),
-  //             icon: resolveCategoryIcon(data.icon, data.name),
-  //             available: data.available !== false,
-  //           };
-  //         })
-  //         .filter((item) => item.available && Boolean(item.id) && Boolean(item.label))
-  //         .map((item) => ({
-  //           id: item.id,
-  //           label: item.label,
-  //           icon: item.icon,
-  //         } as HomeCategoryItem));
-
-  //       if (categories.length > 0) {
-  //         setHomeCategories([{ id: '0', label: 'All', icon: 'grid-outline' }, ...categories]);
-  //         return;
-  //       }
-
-  //       setHomeCategories(FALLBACK_HOME_CATEGORIES);
-  //     } catch (error) {
-  //       console.warn('Failed to load categories for home.', error);
-  //       setHomeCategories(FALLBACK_HOME_CATEGORIES);
-  //     }
-  //   };
-
-  //   void loadHomeCategories();
-  // }, []);
-
   const resolveCafeName = (order: any) => {
     const direct = String(order?.restaurant?.name || order?.cafeName || order?.restaurantName || '').trim();
     if (direct) return direct;
@@ -773,14 +733,16 @@ export default function HomeScreen() {
     });
   }, [restaurants]);
 
-  // Tapping a category filters the "Restaurants" list in place (below) — it never
-  // navigates anywhere. Matches against each restaurant's own cuisine/food-type tags
-  // (the same "Cafe | Fast Food | Chinese" string already shown on its card), since
-  // that's already loaded with the restaurant list — no extra per-restaurant menu-category
-  // fetch needed just to power this chip row.
-  const handleCategoryPress = useCallback((categoryId: string) => {
-    setSelectedCategoryId(String(categoryId || '0').trim() || '0');
-  }, []);
+  // A craving chip runs the same platform-wide search as typing it into the search box
+  // (restaurants, cuisines, menu categories and dishes); "All" clears the search.
+  const isCravingSelected = (category: HomeCategoryItem) => {
+    const query = searchQuery.trim().toLowerCase();
+    return category.id === '0' ? !query : query === String(category.label || '').trim().toLowerCase();
+  };
+  const handleCravingPress = (category: HomeCategoryItem) => {
+    setSearchQuery(category.id === '0' ? '' : String(category.label || '').trim());
+    setShowFilters(false);
+  };
 
   return (
     <Container style={{ paddingTop: insets.top }}>
@@ -881,18 +843,23 @@ export default function HomeScreen() {
             </SearchClearButton>
           ) : null}
         </SearchBar>
-          <Pressable accessibilityRole="button" accessibilityLabel="Filter restaurants" onPress={() => setShowFilters(true)} style={{ width: 48, height: moderateVerticalScale(54), borderRadius: 14, backgroundColor: '#fff', borderWidth: 1, borderColor: foodFilter !== 'ALL' || selectedCategoryId !== '0' ? '#ff6b00' : '#ffead9', alignItems: 'center', justifyContent: 'center' }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Filter restaurants" onPress={() => setShowFilters(true)} style={{ width: 48, height: moderateVerticalScale(54), borderRadius: 14, backgroundColor: '#fff', borderWidth: 1, borderColor: foodFilter !== 'ALL' ? '#ff6b00' : '#ffead9', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="options-outline" size={25} color="#ff6b00" />
           </Pressable></View>
         <Modal visible={showFilters} transparent animationType="slide" onRequestClose={() => setShowFilters(false)}>
           <ModalOverlay><ModalCard>
-            <ModalTitle>Food preference</ModalTitle>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <ModalTitle>Food preference</ModalTitle>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close filters" hitSlop={10} onPress={() => setShowFilters(false)} style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#fff0e3', alignItems: 'center', justifyContent: 'center', marginTop: -4, marginRight: -8 }}>
+                <Ionicons name="close" size={20} color="#653919" />
+              </Pressable>
+            </View>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14, marginBottom: 20 }}>
               {RESTAURANT_FOOD_FILTERS.map(filter => <Pressable key={filter.id} accessibilityRole="button" accessibilityState={{ selected: foodFilter === filter.id }} onPress={() => setFoodFilter(filter.id)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, padding: 12, borderRadius: 20, backgroundColor: foodFilter === filter.id ? '#ff6b00' : '#fff0e3' }}>{filter.mark ? <FoodTypeMark foodType={filter.mark} size={13} /> : null}<Text style={{ color: foodFilter === filter.id ? '#fff' : '#653919', fontWeight: '600' }}>{filter.label}</Text></Pressable>)}
             </View>
             <ModalTitle>What are you craving?</ModalTitle>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginVertical: 20 }}>
-              {homeCategories.map(category => <Pressable key={category.id} accessibilityRole="button" accessibilityState={{ selected: selectedCategoryId === category.id }} onPress={() => { handleCategoryPress(category.id); setShowFilters(false); }} style={{ padding: 12, borderRadius: 20, backgroundColor: selectedCategoryId === category.id ? '#ff6b00' : '#fff0e3' }}><Text style={{ color: selectedCategoryId === category.id ? '#fff' : '#653919', fontWeight: '600' }}>{category.label}</Text></Pressable>)}
+              {homeCategories.map(category => <Pressable key={category.id} accessibilityRole="button" accessibilityState={{ selected: isCravingSelected(category) }} onPress={() => handleCravingPress(category)} style={{ padding: 12, borderRadius: 20, backgroundColor: isCravingSelected(category) ? '#ff6b00' : '#fff0e3' }}><Text style={{ color: isCravingSelected(category) ? '#fff' : '#653919', fontWeight: '600' }}>{category.label}</Text></Pressable>)}
             </View>
             <ModalButton onPress={() => setShowFilters(false)} style={{ backgroundColor: '#ff6b00' }}><ModalButtonText>Done</ModalButtonText></ModalButton>
           </ModalCard></ModalOverlay>
@@ -1017,20 +984,6 @@ export default function HomeScreen() {
           </>
         ) : (
           <>
-            <CategoriesScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start' }}>
-              {homeCategories.map((category) => {
-                const isActive = category.id === selectedCategoryId;
-                return (
-                  <CategoryPill key={category.id} activeOpacity={0.85} onPress={() => handleCategoryPress(category.id)}>
-                    <CategoryIconWrap $active={isActive}>
-                      <Ionicons name={category.icon as any} size={moderateScale(24)} color={isActive ? '#fff' : '#ff6b00'} />
-                    </CategoryIconWrap>
-                    <CategoryLabel $active={isActive} adjustsFontSizeToFit={false} numberOfLines={2}>{category.label}</CategoryLabel>
-                  </CategoryPill>
-                );
-              })}
-            </CategoriesScroll>
-
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
               {RESTAURANT_FOOD_FILTERS.map((filter) => {
                 const active = foodFilter === filter.id;
@@ -1055,7 +1008,7 @@ export default function HomeScreen() {
                 <Image source={require('../assets/images/biryani_banner.png')} style={{ position: 'absolute', width: '240%', height: '145%', left: '-132%', top: '-5%' }} resizeMode="cover" />
               </HeroBannerIconWrap>
               <HeroBannerContent>
-                <Text style={{ color: '#b66324', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 9 }}>TASTE OF PRAYAGRAJ</Text>
+                <Text style={{ color: '#b66324', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 9 }}>{cityName ? `TASTE OF ${cityName.toUpperCase()}` : 'TASTE OF YOUR CITY'}</Text>
                 <HeroBannerTitle>Good Food{'\n'}<Text style={{ color: '#ff6b00' }}>Happier Days!</Text></HeroBannerTitle>
                 <HeroBannerSubtitle>Your favourite restaurants,{'\n'}now closer than ever.</HeroBannerSubtitle>
                 <HeroBannerCta><HeroBannerCtaText>Order Now</HeroBannerCtaText><Ionicons name="arrow-forward" size={18} color="#fff" /></HeroBannerCta>
@@ -1176,9 +1129,9 @@ export default function HomeScreen() {
                 />
               ))
             ) : restaurants.length > 0 ? (
-              <EmptyText>{foodFilter !== 'ALL' && foodFilteredRestaurants.length === 0 ? 'No restaurants match this food preference right now.' : 'No restaurants match this category right now.'}</EmptyText>
+              <EmptyText>{foodFilter !== 'ALL' && foodFilteredRestaurants.length === 0 ? 'No restaurants match this food preference right now.' : 'No restaurants available right now.'}</EmptyText>
             ) : (
-              <EmptyText>No restaurants found.</EmptyText>
+              <NoRestaurantsHere city={cityName} />
             )}
 
 
@@ -1497,42 +1450,6 @@ const CategorySkeletonWrap = styled.View`
 
 const ShimmerButtonRow = styled.View`
   flex-direction: row;
-`;
-
-const CategoriesScroll = styled.ScrollView`
-  flex-grow: 0;
-  flex-shrink: 0;
-  margin-top: 0px;
-  margin-bottom: 16px;
-`;
-
-const CategoryPill = styled.TouchableOpacity`
-  width: ${moderateScale(68)}px;
-  margin-right: ${moderateScale(10)}px;
-  align-items: center;
-`;
-
-const CategoryIconWrap = styled.View<{ $active?: boolean }>`
-  width: ${moderateScale(50)}px;
-  height: ${moderateScale(50)}px;
-  border-radius: ${moderateScale(25)}px;
-  border-width: 1px;
-  border-color: ${({ $active }: { $active?: boolean }) => ($active ? '#ff6b00' : '#f2e7d9')};
-  background-color: ${({ $active }: { $active?: boolean }) => ($active ? '#ff6b00' : '#fff8ef')};
-  align-items: center;
-  justify-content: center;
-  margin-bottom: ${moderateVerticalScale(7)}px;
-`;
-
-const CategoryLabel = styled.Text<{ $active?: boolean }>`
-  width: 100%;
-  min-height: 36px;
-  flex-shrink: 0;
-  line-height: 18px;
-  color: ${({ $active }: { $active?: boolean }) => ($active ? '#ff6b00' : '#202020')};
-  font-size: 14px;
-  text-align: center;
-  font-weight: 700;
 `;
 
 const SectionHeader = styled.View`

@@ -107,3 +107,21 @@ export const formatBranchOfferHeadline = (offer: BranchOfferRecord): string => {
 export const getBranchOffers = async (): Promise<BranchOfferRecord[]> => {
   return apiClient.get<BranchOfferRecord[]>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/offers`);
 };
+
+/** One live offer checked against the cart by the server — applicable with its discount, or
+ *  with what the customer still needs ("Add 1 Aloo Patty Burger…"). */
+export type EvaluatedOffer = {
+  offerId: string;
+  name: string;
+  headline: string;
+  details: string;
+  couponCode: string;
+  autoApply: boolean;
+  applicable: boolean;
+  discountAmount: number;
+  message: string | null;
+};
+
+/** Checkout's "Offers for you" — the same engine order placement uses prices every offer. */
+export const evaluateOffers = async (params: { items: unknown[]; orderType?: string }): Promise<{ offers: EvaluatedOffer[] }> =>
+  apiClient.post(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/offers/evaluate`, params);

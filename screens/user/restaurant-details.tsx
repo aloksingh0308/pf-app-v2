@@ -26,6 +26,7 @@ import { DealMenuView } from '@/types/Deal';
 import { RootState } from '../../store';
 import { buildProductCartKey } from '@/utils/productVariants';
 import RestaurantPausedBanner from '@/components/RestaurantPausedBanner';
+import { restaurantShareUrl, WEBSITE_ORIGIN } from '@/utils/deepLinks';
 
 
 const getComboSavingsLabel = (deal: DealMenuView): string => {
@@ -407,7 +408,13 @@ export default function RestaurantDetailsScreen() {
         catch { showAlert('Unable to save', 'Please try again.'); }
       } },
       { icon: 'share-social-outline', label: 'Share restaurant', onPress: () => {
-        void Share.share({ message: `${parsedRestaurant?.name || 'Restaurant'}\n${parsedRestaurant?.address || ''}\nFind us on Prayagi Foodwala!` }).catch(() => {});
+        // Universal link: opens this restaurant in the app (or the login page if signed out),
+        // and the website's restaurant page when the app isn't installed.
+        const link = parsedRestaurant?.orgSlug && parsedRestaurant?.branchCode
+          ? restaurantShareUrl(parsedRestaurant.orgSlug, parsedRestaurant.branchCode)
+          : WEBSITE_ORIGIN;
+        const message = [parsedRestaurant?.name || 'Restaurant', parsedRestaurant?.address, `Order on Prayagi Foodwala: ${link}`].filter(Boolean).join('\n');
+        void Share.share({ message }).catch(() => {});
       } },
     ]} />
     <RestaurantPausedBanner restaurantName={parsedRestaurant?.name} />

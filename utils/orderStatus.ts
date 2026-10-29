@@ -21,6 +21,9 @@ const STAGE_BY_STATUS: Record<string, OrderStage> = {
   draft: 'PLACED',
   // Held for the platform Care Team's confirmation call (cash home delivery, new customer).
   pending_verification: 'PLACED',
+  // Prepaid order whose online payment isn't confirmed yet (or never completed).
+  awaiting_payment: 'PLACED',
+  payment_failed: 'CANCELLED',
   placed: 'PLACED',
   pending: 'PLACED',
   accepted: 'ACCEPTED',
@@ -53,6 +56,8 @@ export function getOrderStage(status: unknown): OrderStage {
 
 /** Placed, but waiting for a quick confirmation call before the restaurant gets it. */
 export const isAwaitingConfirmation = (status: unknown) => normalize(status) === 'pending_verification';
+export const isAwaitingPayment = (status: unknown) => normalize(status) === 'awaiting_payment';
+export const isPaymentFailed = (status: unknown) => normalize(status) === 'payment_failed';
 
 export const isRejected = (status: unknown) => normalize(status) === 'rejected';
 export const isOrderDelivered = (status: unknown) => getOrderStage(status) === 'DELIVERED';
@@ -70,6 +75,8 @@ export const isOnTheWay = (status: unknown) => getOrderStage(status) === 'OUT_FO
  *  where a delivery would say "Ready"/"Delivered". */
 export function orderStatusLabel(status: unknown, orderType?: 'delivery' | 'takeaway' | 'dinein'): string {
   if (isAwaitingConfirmation(status)) return 'Confirming';
+  if (isAwaitingPayment(status)) return 'Payment pending';
+  if (isPaymentFailed(status)) return 'Payment not completed';
   switch (getOrderStage(status)) {
     case 'PLACED':
       return 'Placed';
@@ -95,6 +102,8 @@ export function orderStatusLabel(status: unknown, orderType?: 'delivery' | 'take
 /** One-line explanation for the live order bar / tracking screen. */
 export function orderStatusMessage(status: unknown, orderType?: 'delivery' | 'takeaway' | 'dinein'): string {
   if (isAwaitingConfirmation(status)) return 'Confirming your order — our team may call you shortly';
+  if (isAwaitingPayment(status)) return 'Waiting for your payment to be confirmed';
+  if (isPaymentFailed(status)) return 'Payment was not completed, so the order was not placed. Any money deducted is refunded automatically.';
   switch (getOrderStage(status)) {
     case 'PLACED':
       return 'Waiting for the restaurant to confirm your order';

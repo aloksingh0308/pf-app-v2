@@ -108,7 +108,17 @@ export default function EditProfileScreen() {
     try {
       setSaving(true);
 
-      const uploadedProfileImage = await uploadProfileImageIfNeeded(profileImage);
+      let uploadedProfileImage: string;
+      try {
+        uploadedProfileImage = await uploadProfileImageIfNeeded(profileImage);
+      } catch (uploadError: any) {
+        // Say which step failed — the generic error mapping hid the real reason before.
+        console.warn('[edit-profile] photo upload failed', uploadError);
+        setSaving(false);
+        setSaveStatusText('');
+        showAlert('Photo not uploaded', uploadError?.message ? `Couldn't upload the photo: ${uploadError.message}` : "Couldn't upload the photo. Please try another picture.");
+        return;
+      }
       setSaveStatusText('Saving profile...');
 
       const updates = {

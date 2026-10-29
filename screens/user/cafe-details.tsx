@@ -51,7 +51,7 @@ type Restaurant = {
 };
 
 const FALLBACK_CAFE_IMAGE = 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1200&q=80';
-const DEFAULT_ADDRESS = 'Civil Lines, Prayagraj';
+const DEFAULT_ADDRESS = 'Address not available';
 const DEFAULT_PHONE = '+911234567890';
 const DEFAULT_OPENING_HOURS = '10:30 AM - 10:30 PM';
 

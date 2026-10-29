@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 import { showErrorAlert } from '../../services/alertService';
 import { RootState } from '../../store';
+import { inviteShareUrl } from '@/utils/deepLinks';
 
 const APP_STORE_LINK = 'https://play.google.com/store/apps/details?id=com.alok0308.praygagifoodwala';
 
@@ -25,7 +26,9 @@ export default function ReferEarnScreen() {
   const user = useSelector((state: RootState) => state.auth.user);
   const code = String(user?.referralCode || '').trim();
   const referralCount = Number(user?.referralCount || 0);
-  const referralLink = code ? `${APP_STORE_LINK}&code=${encodeURIComponent(code)}` : APP_STORE_LINK;
+  // Opens the app straight to sign-up with the code filled in, or (not installed) the website's
+  // /invite page, which forwards to the Play Store with the code as the install referrer.
+  const referralLink = code ? inviteShareUrl(code) : APP_STORE_LINK;
   const [copied, setCopied] = useState(false);
   const [qrVisible, setQrVisible] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

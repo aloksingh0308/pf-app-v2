@@ -4,6 +4,7 @@ import { RootState } from '@/store';
 import { addToCart, clearCart } from '@/store/slices/cartSlice';
 import { hasCartRestaurantConflict } from '@/utils/cartRestaurantGuard';
 import { showAlert } from '@/services/alertService';
+import { track } from '@/services/analytics';
 
 /**
  * Central gate for every "add to cart" call in the app. If the item being added
@@ -20,6 +21,7 @@ export function useAddToCartWithRestaurantGuard() {
     (item: any, restaurantNames?: { current?: string; next?: string }) => {
       if (!hasCartRestaurantConflict(cartItems, item)) {
         dispatch(addToCart(item));
+        track('add_to_cart', { item_name: item?.name, value: Number(item?.price) || 0, currency: 'INR' });
         return true;
       }
 
@@ -53,6 +55,7 @@ export function useAddToCartWithRestaurantGuard() {
       const conflicting = items.find((item) => hasCartRestaurantConflict(cartItems, item));
       if (!conflicting) {
         items.forEach((item) => dispatch(addToCart(item)));
+        track('add_to_cart', { items: items.length });
         return true;
       }
 

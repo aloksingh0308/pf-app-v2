@@ -2,6 +2,7 @@ import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { OrderType } from "../types/enums";
 import { apiClient } from "../utils/apiClient";
 import { getActiveOrgSlug, getActiveBranchCode } from "./restaurantContext";
+import type { CheckoutPayment } from './paymentService';
 
 // Placeholder for the original Firestore `Timestamp` type these fields were typed with.
 // The backend sends plain ISO date strings instead; every call site already falls back to
@@ -91,6 +92,8 @@ export interface Order {
     influencerUid?: string | null;
     influencerCycle?: number | null;
     pricing?: OrderPricing;
+    /** COD = pay on delivery/pickup; ONLINE = paid through the app (Razorpay) before placing. */
+    paymentMode?: 'COD' | 'ONLINE';
     userId?: string | null;
     displayOrderId?: string;
     reward?: {
@@ -108,11 +111,27 @@ export interface Order {
     lastEditedAt?: Timestamp;
     review?: OrderReviewSummary | null;
     itemReviews?: Record<string, OrderItemReview>;
+    /** Who delivered it (delivered Home Delivery orders only) — can be rated with the review. */
+    deliveryRider?: { name: string } | null;
+    /** The customer's rating of that rider, once given. */
+    riderReview?: RiderReview | null;
     isScheduledOrder?: boolean;
     scheduledDate?: string;
     slotLabel?: string;
     slotStart?: string;
     slotEnd?: string;
+}
+
+/** Quick tags for a rider rating — must match the backend's RIDER_RATING_TAGS
+ *  (models/OrderReview.ts). Praise is offered for 4–5 stars, complaints for 1–3. */
+export const RIDER_PRAISE_TAGS = ['On time', 'Polite', 'Handled food with care', 'Followed instructions'] as const;
+export const RIDER_COMPLAINT_TAGS = ['Late delivery', 'Rude behaviour', 'Food spilled or damaged', "Didn't follow instructions", 'Asked for extra money'] as const;
+export type RiderRatingTag = (typeof RIDER_PRAISE_TAGS)[number] | (typeof RIDER_COMPLAINT_TAGS)[number];
+
+export interface RiderReview {
+    riderName: string;
+    rating: number;
+    tags: RiderRatingTag[];
 }
 
 export interface OrderReviewSummary {
@@ -255,7 +274,8 @@ export function toPosOrderItems(items: OrderItem[]): PosOrderItemPayload[] {
  * logged-in customer) is how the backend knows which account to debit — no account id is
  * sent in this payload.
  *
- * Returns the new order's id (mirrors the Firestore version returning `newOrderRef.id`).
+ * Returns the new order's id and, for an ONLINE (prepaid) order, the checkout to open
+ * (services/paymentService.ts) — the restaurant only gets that order once it's paid.
  */
 export async function placeOrder(
     customerName: string,
@@ -273,7 +293,8 @@ export async function placeOrder(
     deliveryAddressId?: string | null,
     existingOrderId?: string | null,
     restaurantName?: string | null,
-): Promise<string> {
+    paymentMode: 'COD' | 'ONLINE' = 'COD',
+): Promise<{ orderId: string; payment: CheckoutPayment | null }> {
     void email; void userId; void cafeId; void deliveryAddressId; void existingOrderId; void restaurantName;
 
     const isTakeAwayOrder = String(orderType || '') === OrderType.TAKE_AWAY;
@@ -298,7 +319,7 @@ export async function placeOrder(
             coinsRedeemed,
             source: "APP",
         });
-        return order._id;
+        return { orderId: order._id, payment: null };
     }
 
     const order = await apiClient.post<BackendOrder>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/orders`, {
@@ -315,11 +336,10 @@ export async function placeOrder(
         walletAmount,
         coinsRedeemed,
         source: "APP",
+        ...(paymentMode === 'ONLINE' ? { paymentMode: 'ONLINE' } : {}),
     });
-        console.log(order)
 
-    return order._id;
-
+    return { orderId: order._id, payment: order.payment ?? null };
 }
 
 interface BackendOrderReview {
@@ -327,11 +347,15 @@ interface BackendOrderReview {
     comment: string;
     imageUrl?: string | null;
     items: { menuItemId: string; menuItemName: string; rating: number }[];
+    rider?: RiderReview | null;
     createdAt: string;
 }
 
 interface BackendOrder {
     _id: string;
+    /** Only on a just-placed ONLINE order: the Razorpay checkout to open. */
+    payment?: CheckoutPayment | null;
+    paymentMode?: 'COD' | 'ONLINE';
     orderNumber: string;
     orderType: "DINE_IN" | "TAKEAWAY" | "HOME_DELIVERY";
     status: string;
@@ -373,6 +397,7 @@ interface BackendOrder {
     cancellableUntil?: string | null;
     deliveryAddress?: string | null;
     review?: BackendOrderReview | null;
+    deliveryRider?: { name: string } | null;
     isScheduledOrder?: boolean;
     scheduledDate?: string;
     slotLabel?: string;
@@ -484,11 +509,14 @@ function mapBackendOrder(order: BackendOrder): Order {
         amountPaid: order.amountPaid ?? 0,
         amountDue: order.paymentStatus === "PAID" ? 0 : Math.max(0, Math.round((order.pricing.total - (order.amountPaid ?? 0)) * 100) / 100),
         paymentStatus: order.paymentStatus ?? "UNPAID",
+        paymentMode: order.paymentMode ?? "COD",
         displayOrderId: order.orderNumber,
         restaurant: order.restaurant
             ? { ...order.restaurant, logoUrl: resolveImageUrl(order.restaurant.logoUrl) || null, coverImageUrl: resolveImageUrl(order.restaurant.coverImageUrl) || null }
             : null,
         ...reviewFields,
+        deliveryRider: order.deliveryRider ?? null,
+        riderReview: order.review?.rider ? { riderName: order.review.rider.riderName, rating: order.review.rider.rating, tags: order.review.rider.tags || [] } : null,
         ...(order.isScheduledOrder
             ? {
                 isScheduledOrder: true,
@@ -538,7 +566,13 @@ export async function uploadReviewImage(localUri: string): Promise<string> {
  *  comment/photo), matching the original client's own all-at-once submission. */
 export async function submitOrderReview(
     orderId: string,
-    input: { items: { menuItemId: string; rating: number }[]; comment: string; imageUrl?: string | null }
+    input: {
+        items: { menuItemId: string; rating: number }[];
+        comment: string;
+        imageUrl?: string | null;
+        /** Leave out to keep any earlier rider rating as it is. */
+        rider?: { rating: number; tags: RiderRatingTag[] };
+    }
 ): Promise<void> {
     await apiClient.post(`/public/customers/me/orders/${orderId}/review`, input);
 }

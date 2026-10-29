@@ -4,7 +4,15 @@ import CancelOrderButton from '@/components/CancelOrderButton';
 import { getMenuItems } from '@/services/menuService';
 import { findRestaurantByAnyId } from '@/services/restaurantService';
 import { userService } from '@/services/userService';
-import { getMyOrdersPage, OrderRestaurantSummary, submitOrderReview as submitOrderReviewApi, uploadReviewImage } from '@/services/orderService';
+import {
+  getMyOrdersPage,
+  OrderRestaurantSummary,
+  RIDER_COMPLAINT_TAGS,
+  RIDER_PRAISE_TAGS,
+  RiderRatingTag,
+  submitOrderReview as submitOrderReviewApi,
+  uploadReviewImage,
+} from '@/services/orderService';
 import { setCartItems, setEditingOrderMeta } from '@/store/slices/cartSlice';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as ImagePicker from 'expo-image-picker';
@@ -93,6 +101,9 @@ const OrderHistoryScreen = () => {
   const [itemRatings, setItemRatings] = useState<Record<string, number>>({});
   const [reviewComment, setReviewComment] = useState('');
   const [reviewImageUri, setReviewImageUri] = useState('');
+  // Delivery partner rating (Home Delivery orders that had a rider) — optional.
+  const [riderRating, setRiderRating] = useState(0);
+  const [riderTags, setRiderTags] = useState<RiderRatingTag[]>([]);
   const [submittingReview, setSubmittingReview] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   // Price breakdowns start collapsed — the card shows just the total; tap to expand.
@@ -173,7 +184,22 @@ const OrderHistoryScreen = () => {
     setItemRatings(nextRatings);
     setReviewComment(String(order?.review?.comment || latestExisting?.comment || ''));
     setReviewImageUri(String(order?.review?.imageUrl || latestExisting?.imageUrl || ''));
+    setRiderRating(Number(order?.riderReview?.rating || 0));
+    setRiderTags(Array.isArray(order?.riderReview?.tags) ? order.riderReview.tags : []);
   };
+
+  const canRateRider = (order: any) => Boolean(order?.deliveryRider?.name);
+  const hasRatedRider = (order: any) => Number(order?.riderReview?.rating || 0) > 0;
+
+  /** Changing the stars between praise (4–5) and complaint (1–3) drops tags of the other kind. */
+  const pickRiderRating = (stars: number) => {
+    setRiderRating(stars);
+    const allowed: readonly string[] = stars >= 4 ? RIDER_PRAISE_TAGS : RIDER_COMPLAINT_TAGS;
+    setRiderTags((prev) => prev.filter((tag) => allowed.includes(tag)));
+  };
+
+  const toggleRiderTag = (tag: RiderRatingTag) =>
+    setRiderTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
 
 
   const isEditableAppOrder = (order: any) => {
@@ -299,6 +325,8 @@ const OrderHistoryScreen = () => {
     setItemRatings({});
     setReviewComment('');
     setReviewImageUri('');
+    setRiderRating(0);
+    setRiderTags([]);
     setSubmittingReview(false);
   };
 
@@ -384,6 +412,7 @@ const OrderHistoryScreen = () => {
         items: reviewableItems.map((item) => ({ menuItemId: item.productId, rating: Number(itemRatings[item.productId] || 0) })),
         comment: trimmedComment,
         imageUrl: imageUrl || null,
+        ...(canRateRider(reviewOrder) && riderRating > 0 ? { rider: { rating: riderRating, tags: riderTags } } : {}),
       });
 
       await refreshFirstPage();
@@ -491,6 +520,8 @@ const OrderHistoryScreen = () => {
         reviewRating: Number(order?.review?.rating || 0),
         reviewCount: Number(order?.review?.reviewCount || 0),
         itemReviewKeys: Object.keys(order?.itemReviews || {}).sort().join('|'),
+        riderRating: Number(order?.riderReview?.rating || 0),
+        deliveryRider: String(order?.deliveryRider?.name || ''),
       }))
     );
 
@@ -591,6 +622,9 @@ const OrderHistoryScreen = () => {
     const totalReviewableItems = getReviewableOrderItems(item).length;
     const hasReview = reviewedItemCount > 0;
     const allItemsReviewed = totalReviewableItems > 0 && reviewedItemCount >= totalReviewableItems;
+    // Food rated but the rider not yet — the button stays open just for the rider.
+    const riderStillToRate = allItemsReviewed && canRateRider(item) && !hasRatedRider(item);
+    const fullyRated = allItemsReviewed && !riderStillToRate;
     const visibleOrderId = String(item.displayOrderId || `#${item.id}`);
     const restaurant = item.restaurant as OrderRestaurantSummary | null | undefined;
     const statusStyle = isScheduledOrder ? orderStatusColors('scheduled') : orderStatusColors(item.status);
@@ -730,15 +764,17 @@ const OrderHistoryScreen = () => {
               </InvoiceIconButton>
 
               <ReviewButton
-                disabled={allItemsReviewed}
+                disabled={fullyRated}
                 onPress={() => openReviewModal(item)}
-                style={{ opacity: allItemsReviewed ? 0.6 : 1 }}
+                style={{ opacity: fullyRated ? 0.6 : 1 }}
               >
-                <Ionicons name={allItemsReviewed ? 'star' : 'star-outline'} size={15} color="#f68712" />
+                <Ionicons name={fullyRated ? 'star' : 'star-outline'} size={15} color="#f68712" />
                 <ReviewButtonText>
-                  {allItemsReviewed
+                  {fullyRated
                     ? 'Already Rated'
-                    : hasReview
+                    : riderStillToRate
+                      ? 'Rate Rider'
+                      : hasReview
                       ? `Rate Items ${reviewedItemCount}/${totalReviewableItems}`
                       : 'Rate Items'}
                 </ReviewButtonText>
@@ -855,6 +891,39 @@ const OrderHistoryScreen = () => {
                 );
               })}
             </ReviewItemsList>
+
+            {canRateRider(reviewOrder) ? (
+              <ReviewItemRow>
+                <ReviewItemRowTop>
+                  <Ionicons name="bicycle-outline" size={18} color="#f68712" style={{ marginRight: 6 }} />
+                  <ReviewItemName numberOfLines={1}>Rate {reviewOrder.deliveryRider.name} (delivery partner)</ReviewItemName>
+                  <ReviewItemRatingText>{riderRating > 0 ? `${riderRating}/5` : 'Optional'}</ReviewItemRatingText>
+                </ReviewItemRowTop>
+                <ReviewItemStars>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <StarButton key={`rider-${star}`} onPress={() => pickRiderRating(star)} disabled={submittingReview}>
+                      <Ionicons
+                        name={riderRating >= star ? 'star' : 'star-outline'}
+                        size={24}
+                        color={riderRating >= star ? '#f68712' : '#cfcfcf'}
+                      />
+                    </StarButton>
+                  ))}
+                </ReviewItemStars>
+                {riderRating > 0 ? (
+                  <RiderTagsRow>
+                    {(riderRating >= 4 ? RIDER_PRAISE_TAGS : RIDER_COMPLAINT_TAGS).map((tag) => {
+                      const selected = riderTags.includes(tag);
+                      return (
+                        <RiderTagChip key={tag} selected={selected} onPress={() => toggleRiderTag(tag)} disabled={submittingReview}>
+                          <RiderTagText selected={selected}>{tag}</RiderTagText>
+                        </RiderTagChip>
+                      );
+                    })}
+                  </RiderTagsRow>
+                ) : null}
+              </ReviewItemRow>
+            ) : null}
 
             <ReviewInput
               value={reviewComment}
@@ -1315,6 +1384,28 @@ const ReviewItemRatingText = styled.Text`
 const ReviewItemStars = styled.View`
   margin-top: 8px;
   flex-direction: row;
+`;
+
+const RiderTagsRow = styled.View`
+  margin-top: 8px;
+  flex-direction: row;
+  flex-wrap: wrap;
+`;
+
+const RiderTagChip = styled.TouchableOpacity<{ selected: boolean }>`
+  padding: 6px 10px;
+  margin-right: 6px;
+  margin-bottom: 6px;
+  border-radius: 14px;
+  border-width: 1px;
+  border-color: ${(p: { selected: boolean }) => (p.selected ? '#f68712' : '#e2e2e2')};
+  background-color: ${(p: { selected: boolean }) => (p.selected ? '#fff4e8' : '#fff')};
+`;
+
+const RiderTagText = styled.Text<{ selected: boolean }>`
+  font-size: 12px;
+  font-weight: 600;
+  color: ${(p: { selected: boolean }) => (p.selected ? '#f68712' : '#555')};
 `;
 
 const StarButton = styled.TouchableOpacity`

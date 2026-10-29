@@ -2,7 +2,7 @@
   "expo": {
     "name": "PrayagiFoodwala",
     "slug": "praygagifoodwala",
-    "version": "2.2.8",
+    "version": "4.0.0",
     "icon": "./assets/images/icon.png",
     "scheme": "PrayagiFoodwala",
     "userInterfaceStyle": "automatic",
@@ -20,7 +20,11 @@
         "NSLocationWhenInUseUsageDescription": "We use your location to show nearby restaurants.",
         "NSCameraUsageDescription": "We use your camera so you can capture profile and order-related photos.",
         "NSMicrophoneUsageDescription": "We use your microphone only when recording audio features inside the app."
-      }
+      },
+      "associatedDomains": [
+        "applinks:prayagifoodwala.com",
+        "applinks:www.prayagifoodwala.com"
+      ]
     },
     "android": {
       "adaptiveIcon": {
@@ -50,7 +54,39 @@
         "visible": "immersive",
         "barStyle": "light-content",
         "backgroundColor": "#000000"
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "prayagifoodwala.com",
+              "pathPrefix": "/r/"
+            },
+            {
+              "scheme": "https",
+              "host": "prayagifoodwala.com",
+              "pathPrefix": "/invite/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.prayagifoodwala.com",
+              "pathPrefix": "/r/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.prayagifoodwala.com",
+              "pathPrefix": "/invite/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -79,7 +115,7 @@
       [
         "react-native-google-mobile-ads",
         {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "androidAppId": "ca-app-pub-2598300953281179~8928999767",
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
         }
       ],

@@ -1,4 +1,6 @@
 import { dobToIso } from '@/utils/dateOfBirth';
+import { getPendingReferralCode, normalizeReferralCode, onPendingLinkChange } from '@/utils/deepLinks';
+import { getInstallReferrer } from '@/utils/referral';
 import DateOfBirthPicker from '@/components/DateOfBirthPicker';
 import AppButton from "@/components/common/AppButton";
 import { AppColors } from "@/constants/appColors";
@@ -10,6 +12,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDispatch } from "react-redux";
 import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../services/alertService";
+import { errorReason, track } from "../services/analytics";
 import { authService } from "../services/authService";
 import { storageService } from "../services/storageService";
 import { userService } from "../services/userService";
@@ -63,6 +66,20 @@ const CompleteProfileScreen = () => {
   useEffect(() => {
     hideGlobalLoader();
   }, [hideGlobalLoader]);
+
+  // Prefill from an invite link (opened with the app installed) or, on a fresh Android
+  // install, from the Play Store install referrer the website's /invite page sets. Never
+  // overwrites a code the user has typed.
+  useEffect(() => {
+    let active = true;
+    const prefill = async () => {
+      const code = (await getPendingReferralCode()) || normalizeReferralCode(await getInstallReferrer());
+      if (active && code) setReferralCode((current) => current.trim() ? current : code);
+    };
+    void prefill();
+    const unsubscribe = onPendingLinkChange(() => void prefill());
+    return () => { active = false; unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     // Guard against opening this screen without a valid pending phone-auth
@@ -133,6 +150,7 @@ const CompleteProfileScreen = () => {
       // (its key changes from "guest" to the user — see app/_layout.tsx), and a redirect
       // fired during that re-mount is lost, leaving the new Stack on this screen. Navigating
       // first means the re-mounted Stack starts on Home.
+      track('sign_up', { method: 'phone' });
       router.replace('/(tabs)' as never);
       requestAnimationFrame(() => dispatch(setUser(userProfile)));
     } catch (error: any) {
@@ -140,6 +158,7 @@ const CompleteProfileScreen = () => {
       dispatch(setLoading(false));
       const errorMessage = error?.message || 'Failed to complete profile setup. Please try again.';
       dispatch(setError(errorMessage));
+      track('sign_up_failed', { reason: errorReason(error) });
       showErrorAlert(error, errorMessage, 'Setup Failed');
     }
   };

@@ -6,6 +6,9 @@ import { useAppLoader } from '@/hooks/useAppLoader';
 import { computeDeliveryFee, DEFAULT_PRICING_CONFIG, getPricingConfig, PricingConfig } from '@/services/appConfigService';
 import { validateCoupon, CouponItem, fetchActiveCoupons, formatCouponOrderTypes, isCouponValidForOrderType, toBackendOrderType } from '@/services/couponService';
 import { OrderItem, placeOrder, toPosOrderItems } from '@/services/orderService';
+import { abandonPayment, CheckoutPayment, CheckoutResult, getPaymentConfig, resumePayment } from '@/services/paymentService';
+import RazorpayCheckout from '@/components/RazorpayCheckout';
+import { EvaluatedOffer, evaluateOffers } from '@/services/offersService';
 import { getReserveSlotConfigFromRestaurant, getReserveSlotsForTomorrow, placeScheduledOrder, ReserveSlot } from '@/services/scheduledOrderService';
 import { findRestaurantByAnyId, getRestaurantClosedMessage } from '@/services/restaurantService';
 import { setActiveRestaurant, consumePendingOffer } from '@/services/restaurantContext';
@@ -21,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../services/alertService';
+import { errorReason, track } from '../../services/analytics';
 import { userService } from '../../services/userService';
 import { RootState } from '../../store';
 import { setUser } from '../../store/slices/authSlice';
@@ -67,6 +71,11 @@ const CheckoutScreen = () => {
   const [coupons, setCoupons] = useState<CouponItem[]>([]);
   const [couponCodeInput, setCouponCodeInput] = useState('');
   const [couponsLoading, setCouponsLoading] = useState(false);
+  // Restaurant offers checked against this cart (evaluateOffers). The best one is applied by
+  // itself unless the customer removed an offer or picked a coupon instead.
+  const [offerResults, setOfferResults] = useState<EvaluatedOffer[]>([]);
+  const [autoOfferDismissed, setAutoOfferDismissed] = useState(false);
+  const [preferredOfferCode, setPreferredOfferCode] = useState<string | null>(null);
   const [isCafeOpen, setIsCafeOpen] = useState(true);
   const restaurantUnavailable = isRestaurantUnavailable(useAppStatus().status);
   const [cafeClosedMessage, setCafeClosedMessage] = useState('');
@@ -80,6 +89,18 @@ const CheckoutScreen = () => {
   const [reserveSubmitting, setReserveSubmitting] = useState(false);
   const [pricingConfig, setPricingConfig] = useState<PricingConfig>(DEFAULT_PRICING_CONFIG);
   const { show: showGlobalLoader, hide: hideGlobalLoader } = useAppLoader();
+  // Online payment (Razorpay) — offered when the server has it set up; dine-in pays at the table.
+  const [onlineAvailable, setOnlineAvailable] = useState(false);
+  const [payMode, setPayMode] = useState<'ONLINE' | 'COD'>('ONLINE');
+  const [checkoutPayment, setCheckoutPayment] = useState<CheckoutPayment | null>(null);
+  // The prepaid order whose payment is open — it only reaches the restaurant once paid.
+  const pendingOnlineOrder = useRef<{ orderId: string; usedWallet: boolean } | null>(null);
+
+  useEffect(() => {
+    getPaymentConfig()
+      .then((cfg) => setOnlineAvailable(Boolean(cfg?.onlinePayments)))
+      .catch(() => setOnlineAvailable(false));
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -89,6 +110,12 @@ const CheckoutScreen = () => {
 
   useEffect(() => {
     getPricingConfig().then(setPricingConfig);
+  }, []);
+
+  useEffect(() => {
+    track('begin_checkout', { order_type: String(orderType || ''), items: cartItems.length });
+    // Once per checkout visit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Coupons are branch-scoped (and reward coupons are tied to the one restaurant that
@@ -301,6 +328,7 @@ const CheckoutScreen = () => {
       setCouponCodeInput(coupon.code || '');
       setCouponModalVisible(false);
     } catch (error: any) {
+      track('coupon_apply_failed', { coupon_code: coupon.code, reason: errorReason(error) });
       showAlert('Coupon Not Applicable', error?.message || 'This coupon could not be applied.');
     } finally {
       setIsApplyingCoupon(false);
@@ -315,11 +343,13 @@ const CheckoutScreen = () => {
   // against the real list instead of guessed at.
   useEffect(() => {
     const branchId = String(restaurantMeta?.id || '').trim();
-    if (!branchId || couponsLoading || coupons.length === 0 || appliedCoupon) return;
+    if (!branchId || couponsLoading || appliedCoupon?.code) return;
     const pending = consumePendingOffer(branchId);
     if (!pending) return;
     const match = coupons.find((coupon) => String(coupon.code || '').trim().toUpperCase() === pending.couponCode.trim().toUpperCase());
     if (match) void handleApplyCoupon(match);
+    // A restaurant offer's code isn't in the coupon list — the offers check below applies it.
+    else setPreferredOfferCode(pending.couponCode.trim().toUpperCase());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurantMeta, couponsLoading, coupons, appliedCoupon]);
 
@@ -371,6 +401,7 @@ const CheckoutScreen = () => {
       setCouponCodeInput(applied.code);
       setCouponModalVisible(false);
     } catch (error: any) {
+      track('coupon_apply_failed', { coupon_code: couponCodeInput.trim().toUpperCase(), reason: errorReason(error), entered_manually: true });
       showAlert('Coupon Not Applicable', error?.message || 'This coupon code is not available or expired.');
     } finally {
       setIsApplyingCoupon(false);
@@ -386,7 +417,27 @@ const CheckoutScreen = () => {
     setCouponModalVisible(true);
   };
 
+  const applyOffer = useCallback((offer: EvaluatedOffer) => {
+    setAppliedCoupon({
+      id: offer.offerId,
+      offerId: offer.offerId,
+      code: offer.couponCode,
+      type: 'Flat',
+      value: offer.discountAmount,
+      dealHeadline: offer.headline,
+      title: offer.name,
+      maxDiscount: 0,
+      minOrder: 0,
+      expiry: null,
+      isActive: true,
+      applicableOrderTypes: [],
+    });
+    setInfluencerCouponResult({ couponId: offer.offerId, discountAmount: offer.discountAmount });
+    setCouponCodeInput('');
+  }, []);
+
   const handleRemoveCoupon = () => {
+    if (appliedCoupon?.offerId) setAutoOfferDismissed(true);
     setAppliedCoupon(null);
     setInfluencerCouponResult(null);
     setCouponCodeInput('');
@@ -442,6 +493,49 @@ const CheckoutScreen = () => {
       originalDealPrice: (item as any).originalDealPrice ?? null,
     }));
   }, [cartItems]);
+
+  // Re-check the restaurant's offers whenever the cart or service type changes.
+  const offerCartKey = JSON.stringify(toPosOrderItems(deriveOrderItems())) + String(backendOrderType || '');
+  useEffect(() => {
+    if (isCouponSectionDisabled || cartItems.length === 0) {
+      setOfferResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await evaluateOffers({ items: toPosOrderItems(deriveOrderItems()), orderType: backendOrderType });
+        if (!cancelled) setOfferResults(result.offers || []);
+      } catch {
+        if (!cancelled) setOfferResults([]);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offerCartKey, isCouponSectionDisabled]);
+
+  // Keep an applied offer in step with the cart, and apply the best one when none is chosen.
+  useEffect(() => {
+    if (appliedCoupon?.offerId) {
+      const current = offerResults.find((offer) => offer.offerId === appliedCoupon.offerId);
+      if (!current || !current.applicable) {
+        setAppliedCoupon(null);
+        setInfluencerCouponResult(null);
+      } else if (current.discountAmount !== influencerCouponResult?.discountAmount) {
+        applyOffer(current);
+      }
+      return;
+    }
+    if (appliedCoupon || autoOfferDismissed) return;
+    const usable = offerResults.filter((offer) => offer.applicable && offer.discountAmount > 0);
+    const pick = usable.find((offer) => offer.couponCode === preferredOfferCode) || usable.find((offer) => offer.autoApply);
+    if (pick) applyOffer(pick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offerResults, appliedCoupon, autoOfferDismissed, preferredOfferCode]);
+
 
   const getCartCafeId = useCallback(() => {
     return String(
@@ -499,6 +593,7 @@ const CheckoutScreen = () => {
         // Paused/closed by the restaurant itself — nothing to schedule, it can't take orders.
         const live = await getActiveRestaurantStatus();
         if (isRestaurantUnavailable(live.status)) {
+          track('order_blocked', { reason: 'restaurant_unavailable', order_type: String(orderType || '') });
           showAlert(
             "Restaurant isn't taking orders",
             `${live.description ? `${live.description}. ` : ''}Please try again later or order from another restaurant.`
@@ -507,6 +602,7 @@ const CheckoutScreen = () => {
         }
         const closedMessage = getRestaurantClosedMessage(String(restaurantRecord?.openingHours || ''));
         if (closedMessage) {
+          track('order_blocked', { reason: 'restaurant_closed', order_type: String(orderType || '') });
           setIsCafeOpen(false);
           setCafeClosedMessage(closedMessage);
           await openReserveOrderSheet();
@@ -556,8 +652,9 @@ const CheckoutScreen = () => {
       // order), so a wallet/coin amount used on an edited order was never reversible
       // either way — unchanged by this migration.
 
+      const paysOnline = onlineAvailable && payMode === 'ONLINE' && isOffPremiseOrder;
       // Place order with pricing details
-      const orderId = await placeOrder(
+      const { orderId, payment } = await placeOrder(
         (customerName as string) || authUser?.name || "John Doe",
         (customerPhone as string) || authUser?.phoneNumber || "1234567890",
         authUser?.email || null,
@@ -590,9 +687,21 @@ const CheckoutScreen = () => {
         String(deliveryAddressId || '').trim() || null,
         String(existingOrderId || '').trim() || null,
         String(restaurantMeta?.name || (cartItems[0] as any)?.restaurantName || '').trim() || null,
+        paysOnline ? 'ONLINE' : 'COD',
       );
 
+      if (payment) {
+        // Prepaid: open Razorpay; the rest happens in handlePaymentResult. Keep the
+        // placement lock until the payment is settled one way or the other.
+        placed = true;
+        pendingOnlineOrder.current = { orderId, usedWallet: walletUsed > 0 || coinDiscount > 0 };
+        hideGlobalLoader();
+        setCheckoutPayment(payment);
+        return;
+      }
+
       placed = true;
+      track('purchase', { transaction_id: String(orderId || ''), value: Number(total) || 0, currency: 'INR', order_type: String(orderType || ''), coupon: appliedCoupon?.code });
 
       // No post-order "mark coupon used"/"spend wallet"/"spend coins" step needed anymore —
       // the backend consumes the coupon and debits wallet/coins itself, transactionally,
@@ -621,6 +730,7 @@ const CheckoutScreen = () => {
     } catch (error) {
       hideGlobalLoader();
       console.error('Error placing order:', error);
+      track('order_place_failed', { reason: errorReason(error), order_type: String(orderType || ''), value: Number(total) || 0 });
       showErrorAlert(error, 'Failed to place order. Please try again.', 'Error');
     } finally {
       // Keep the guard locked after success until checkout unmounts.
@@ -628,6 +738,63 @@ const CheckoutScreen = () => {
       setPlacingOrder(false);
       hideGlobalLoader();
     }
+  };
+
+  const refreshWallet = async () => {
+    if (!authUser?.uid) return;
+    try {
+      const refreshed = await userService.getUserProfile(authUser.uid);
+      if (refreshed) dispatch(setUser({ ...authUser, ...refreshed }));
+    } catch (profileError) {
+      console.error('Failed to refresh wallet/coin balance after payment:', profileError);
+    }
+  };
+
+  const handlePaymentResult = (result: CheckoutResult) => {
+    const pending = pendingOnlineOrder.current;
+    setCheckoutPayment(null);
+    if (!pending) return;
+    if (result.status === 'paid' || result.status === 'pending') {
+      track('purchase', { transaction_id: pending.orderId, value: Number(total) || 0, currency: 'INR', order_type: String(orderType || ''), coupon: appliedCoupon?.code, payment_mode: 'ONLINE' });
+      pendingOnlineOrder.current = null;
+      if (pending.usedWallet) void refreshWallet();
+      dispatch(clearCart());
+      router.replace({ pathname: '/order-success', params: { orderId: pending.orderId, isUpdate: 'false', paymentPending: String(result.status === 'pending') } } as never);
+      return;
+    }
+    track('payment_not_completed', { outcome: result.status, reason: result.status === 'failed' ? result.reason || '' : '' });
+    showAlert(
+      result.status === 'failed' ? 'Payment Failed' : 'Payment Not Completed',
+      `${result.status === 'failed' && result.reason ? `${result.reason} ` : ''}Your order is placed only after it's paid. Try again, or cancel and choose another way to pay.`,
+      [
+        {
+          text: 'Cancel Order',
+          style: 'cancel',
+          onPress: () => {
+            pendingOnlineOrder.current = null;
+            placementInFlight.current = false;
+            abandonPayment(pending.orderId)
+              .catch(() => undefined)
+              .finally(() => {
+                if (pending.usedWallet) void refreshWallet();
+              });
+            showAlert('Order Not Placed', "You weren't charged. Your cart is still here.");
+          },
+        },
+        {
+          text: 'Try Again',
+          onPress: () => {
+            resumePayment(pending.orderId)
+              .then(setCheckoutPayment)
+              .catch((error) => {
+                pendingOnlineOrder.current = null;
+                placementInFlight.current = false;
+                showErrorAlert(error, "This order's payment can't be restarted. Please place the order again.", 'Payment');
+              });
+          },
+        },
+      ]
+    );
   };
 
   const handleReserveOrder = async () => {
@@ -752,6 +919,7 @@ const CheckoutScreen = () => {
       } as never);
     } catch (error: any) {
       console.error('Error reserving order:', error);
+      track('order_place_failed', { reason: errorReason(error), order_type: String(orderType || ''), scheduled: true });
       const message = String(error?.message || '').trim();
       if (message.toLowerCase().includes('slot is full')) {
         showAlert('Slot Full', 'Selected slot is full. Please choose another slot.');
@@ -846,7 +1014,43 @@ const CheckoutScreen = () => {
           {!isCouponSectionDisabled && (hasDealItems || hasBeverageItems) ? (
             <CouponStatusText>Coupons apply to eligible items only. Deals and beverages are excluded.</CouponStatusText>
           ) : null}
-          {appliedCoupon ? (
+          {offerResults.length > 0 ? (
+            <OffersList>
+              <OffersListTitle>Offers for you</OffersListTitle>
+              {offerResults.map((offer) => {
+                const isApplied = appliedCoupon?.offerId === offer.offerId;
+                return (
+                  <OfferRow key={offer.offerId} $applied={isApplied}>
+                    <View style={{ flex: 1 }}>
+                      <OfferRowHeadline>{offer.headline}</OfferRowHeadline>
+                      {offer.applicable ? (
+                        <OfferRowNote>{isApplied ? `You save ₹${offer.discountAmount.toFixed(0)}` : `Save ₹${offer.discountAmount.toFixed(0)} on this order`}</OfferRowNote>
+                      ) : (
+                        <OfferRowHint>{offer.message || 'Not available for this cart yet.'}</OfferRowHint>
+                      )}
+                    </View>
+                    {isApplied ? (
+                      <OfferRowApplied>Applied</OfferRowApplied>
+                    ) : offer.applicable ? (
+                      <InlineRemoveButton
+                        accessibilityRole="button"
+                        accessibilityLabel={`Apply ${offer.headline}`}
+                        onPress={() => {
+                          setAutoOfferDismissed(false);
+                          applyOffer(offer);
+                        }}
+                      >
+                        <InlineRemoveText>Apply</InlineRemoveText>
+                      </InlineRemoveButton>
+                    ) : null}
+                  </OfferRow>
+                );
+              })}
+            </OffersList>
+          ) : null}
+          {appliedCoupon?.offerId ? (
+            <CouponAppliedText>✅ Offer applied — {appliedCoupon.dealHeadline}</CouponAppliedText>
+          ) : appliedCoupon ? (
             <CouponAppliedText>
               ✅ {appliedCoupon.code} — {appliedCoupon.dealHeadline
                 ? appliedCoupon.dealHeadline
@@ -1071,14 +1275,37 @@ const CheckoutScreen = () => {
         </ReserveSheetOverlay>
       </Modal>
 
-      {/* Payment info for home delivery */}
-      {isHomeDeliveryOrder && (
+      {onlineAvailable && isOffPremiseOrder && isCafeOpen ? (
+        <PaymentChoice accessibilityRole="radiogroup">
+          {([
+            { id: 'ONLINE', title: 'Pay online', hint: 'UPI, cards, net banking — secured by Razorpay' },
+            { id: 'COD', title: isHomeDeliveryOrder ? 'Pay on delivery' : 'Pay at the restaurant', hint: 'Cash or UPI when you get your food' },
+          ] as const).map((option) => (
+            <PaymentOption
+              key={option.id}
+              $selected={payMode === option.id}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: payMode === option.id }}
+              onPress={() => setPayMode(option.id)}
+            >
+              <Ionicons name={payMode === option.id ? 'radio-button-on' : 'radio-button-off'} size={moderateScale(20)} color={payMode === option.id ? '#f68712' : '#9a9a9a'} />
+              <View style={{ flex: 1, marginLeft: moderateScale(10) }}>
+                <PaymentOptionTitle>{option.title}</PaymentOptionTitle>
+                <PaymentOptionHint>{option.hint}</PaymentOptionHint>
+              </View>
+            </PaymentOption>
+          ))}
+          {payMode === 'ONLINE' ? <PaymentOptionHint style={{ marginTop: moderateVerticalScale(4) }}>The exact amount, including taxes, is shown on the payment screen.</PaymentOptionHint> : null}
+        </PaymentChoice>
+      ) : isHomeDeliveryOrder ? (
+        /* Payment info for home delivery */
         <PaymentInfoBox>
           <PaymentInfoText>
             Payment will be collected by the delivery partner at the time of delivery.
           </PaymentInfoText>
         </PaymentInfoBox>
-      )}
+      ) : null}
+      <RazorpayCheckout payment={checkoutPayment} onResult={handlePaymentResult} />
       <RestaurantPausedBanner />
       {!isCafeOpen && (
         <View>
@@ -1089,7 +1316,15 @@ const CheckoutScreen = () => {
       )}
       <View>
       <AppButton
-        title={restaurantUnavailable ? 'Not taking orders' : isCafeOpen ? AppStrings.common.placeOrder : 'Schedule Order'}
+        title={
+          restaurantUnavailable
+            ? 'Not taking orders'
+            : !isCafeOpen
+              ? 'Schedule Order'
+              : onlineAvailable && payMode === 'ONLINE' && isOffPremiseOrder
+                ? 'Proceed to Pay'
+                : AppStrings.common.placeOrder
+        }
         onPress={handlePlaceOrder}
         disabled={restaurantUnavailable || placingOrder}
         loading={placingOrder}
@@ -1134,6 +1369,33 @@ const PaymentInfoBox = styled.View`
   border-radius: ${moderateScale(8)}px;
   padding: ${moderateVerticalScale(12)}px ${moderateScale(14)}px;
   margin-bottom: ${moderateVerticalScale(8)}px;
+`;
+
+const PaymentChoice = styled.View`
+  width: 90%;
+  align-self: center;
+  margin-bottom: ${moderateVerticalScale(8)}px;
+`;
+
+const PaymentOption = styled.TouchableOpacity<{ $selected?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  background-color: ${(p: { $selected?: boolean }) => (p.$selected ? '#fff7ef' : '#ffffff')};
+  border: 1px solid ${(p: { $selected?: boolean }) => (p.$selected ? '#f68712' : '#e7ded4')};
+  border-radius: ${moderateScale(8)}px;
+  padding: ${moderateVerticalScale(10)}px ${moderateScale(12)}px;
+  margin-bottom: ${moderateVerticalScale(6)}px;
+`;
+
+const PaymentOptionTitle = styled.Text`
+  color: #222;
+  font-size: ${scaleFont(14)}px;
+  font-weight: 700;
+`;
+
+const PaymentOptionHint = styled.Text`
+  color: #777;
+  font-size: ${scaleFont(12)}px;
 `;
 
 const PaymentInfoText = styled.Text`
@@ -1288,6 +1550,52 @@ const CouponStatusText = styled.Text`
   line-height: ${scaleFont(18)}px;
   color: #666;
   margin-bottom: ${moderateVerticalScale(10)}px;
+`;
+
+const OffersList = styled.View`
+  margin-bottom: ${moderateVerticalScale(12)}px;
+  gap: ${moderateVerticalScale(8)}px;
+`;
+
+const OffersListTitle = styled.Text`
+  font-size: ${scaleFont(13)}px;
+  font-weight: 700;
+  color: #333;
+`;
+
+const OfferRow = styled.View<{ $applied?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  gap: ${moderateScale(10)}px;
+  padding: ${moderateVerticalScale(10)}px ${moderateScale(12)}px;
+  border-radius: ${moderateScale(10)}px;
+  border-width: 1px;
+  border-color: ${(props: any) => (props.$applied ? AppColors.success : '#f1d9c4')};
+  background-color: ${(props: any) => (props.$applied ? '#effaf3' : '#fff8f1')};
+`;
+
+const OfferRowHeadline = styled.Text`
+  font-size: ${scaleFont(13)}px;
+  font-weight: 700;
+  color: #222;
+`;
+
+const OfferRowNote = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  color: ${AppColors.success};
+  margin-top: 2px;
+`;
+
+const OfferRowHint = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  color: #a35a12;
+  margin-top: 2px;
+`;
+
+const OfferRowApplied = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  font-weight: 700;
+  color: ${AppColors.success};
 `;
 
 const CouponAppliedText = styled.Text`
