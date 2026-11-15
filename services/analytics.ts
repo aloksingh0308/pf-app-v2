@@ -155,3 +155,17 @@ export function errorReason(error: unknown): string {
   const parts = [e.status ? `HTTP_${e.status}` : '', e.code || '', e.message || ''].filter(Boolean);
   return scrub(parts.join(' | ') || String(error));
 }
+
+/** Params for every *_failed event: the same error_code / error_message / status fields as
+ *  api_error, so one set of GA4 custom dimensions shows the exact message for all of them.
+ *  error_code falls back to HTTP_<status>, or CLIENT_ERROR for a failure inside the app. */
+export function errorParams(error: unknown): Params {
+  const e = error as { status?: number; code?: string; message?: string } | null;
+  const status = typeof e?.status === 'number' && e.status > 0 ? e.status : undefined;
+  return {
+    reason: errorReason(error),
+    error_code: e?.code || (status ? `HTTP_${status}` : 'CLIENT_ERROR'),
+    error_message: e?.message || (e ? String(error) : 'unknown'),
+    status,
+  };
+}

@@ -76,7 +76,7 @@ const Stepper = styled.View`
   justify-content: center;
 `;
 
-const StepBtn = styled.TouchableOpacity`
+const StepBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background: transparent;
   padding: 2px 8px;
   border-radius: 12px;
@@ -95,7 +95,7 @@ const StepValue = styled.Text`
   margin: 0 8px;
 `;
 
-const AddBtn = styled(Animated.createAnimatedComponent(TouchableOpacity))`
+const AddBtn = styled(Animated.createAnimatedComponent(TouchableOpacity)).attrs({ activeOpacity: 0.8 })`
   background: #f68712;
   border-radius: 12px;
   padding: 7px 22px;
@@ -145,7 +145,7 @@ export default function MenuItemCard({
 
   return (
     <Card>
-      <TouchableOpacity onPress={onPress} style={{ flex: 1 }}>
+      <TouchableOpacity activeOpacity={0.8} onPress={onPress} style={{ flex: 1 }}>
         <NameRow>
           <Name>{item.name}</Name>
           {isBestSeller && <Tag>🔥 Best Seller</Tag>}

@@ -3,23 +3,27 @@ import * as Notifications from 'expo-notifications';
 import { Stack, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, TouchableOpacity } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import 'react-native-reanimated';
 
 import AppAlertProvider from '@/components/AppAlertProvider';
 import AppStatusProvider from '@/components/AppStatusProvider';
 import ConnectivityGate from '@/components/ConnectivityGate';
 import GlobalLoader from '@/components/GlobalLoader';
+import OnboardingSlides from '@/components/OnboardingSlides';
 import { useColorScheme } from '@/hooks/useColorScheme';
-import { analyticsService } from '@/services/analytics';
+import { analyticsService, track } from '@/services/analytics';
 import { authService } from '@/services/authService';
 import { notificationService } from '@/services/notificationService';
+import { askPermissionOnFirstSignIn, refreshNotificationPermission } from '@/services/engagementService';
+import { startCartSync, syncCartNow } from '@/services/cartSyncService';
 import { hydrateCachedLocationAddress, warmupUserLocationCache } from '@/services/locationCacheService';
 import { storageService } from '@/services/storageService';
 import { userService } from '@/services/userService';
 import { showAlert } from '@/services/alertService';
 import { getRestaurants } from '@/services/restaurantService';
-import { clearPendingReferralCode, getPendingReferralCode, onPendingLinkChange, takePendingRestaurant } from '@/utils/deepLinks';
+import { clearPendingReferralCode, getPendingReferralCode, onPendingLinkChange, parseDeepLink, savePendingLink, takePendingRestaurant } from '@/utils/deepLinks';
+import { notificationPreferenceService } from '@/services/notificationPreferenceService';
 import { AppDispatch, RootState, store } from '@/store';
 import { logout, setUser } from '@/store/slices/authSlice';
 import { Settings } from 'react-native-fbsdk-next';
@@ -35,6 +39,9 @@ function RootLayoutContent() {
   const [isFontLoadTimedOut, setIsFontLoadTimedOut] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [isSplashDelayDone, setIsSplashDelayDone] = useState(false);
+  // null until read from storage. The intro slides show once per install, after the splash
+  // and before login — never to someone already signed in (an existing user updating the app).
+  const [hasSeenOnboarding, setHasSeenOnboarding] = useState<boolean | null>(null);
   // A verified phone session whose profile has no name yet (brand-new customer, or the app
   // was closed mid sign-up). Such a user is NOT signed in yet — they're sent to
   // /complete-profile, which signs them in once the profile is saved.
@@ -44,6 +51,8 @@ function RootLayoutContent() {
   const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
   const isAppShellReady = loaded || Boolean(fontError) || isFontLoadTimedOut;
   const pathname = usePathname();
+  const showOnboarding = hasSeenOnboarding === false && !isAuthenticated && !incompleteSession;
+  const isLaunchDone = isSplashDelayDone && hasSeenOnboarding !== null && !showOnboarding;
   // Read via ref inside the auth-redirect effect below so that effect keeps
   // firing only on auth-state changes, not on every navigation — otherwise an
   // authenticated user gets force-redirected to the home tab on every route
@@ -91,10 +100,11 @@ function RootLayoutContent() {
     }
   }, []);
 
+  const handledNotificationIdsRef = useRef(new Set<string>());
   const isAuthenticatedRef = useRef(isAuthenticated);
   isAuthenticatedRef.current = isAuthenticated;
   const isNavReadyRef = useRef(false);
-  isNavReadyRef.current = !isCheckingAuth && isSplashDelayDone;
+  isNavReadyRef.current = !isCheckingAuth && isLaunchDone;
 
   // A link tapped while the app is already running (cold starts are handled by the auth
   // redirect below once it has decided where to land).
@@ -107,14 +117,6 @@ function RootLayoutContent() {
     }
     // Signed out: already on login / complete-profile, which pick up the pending link.
   }), [openPendingRestaurant]);
-
-  useEffect(() => {
-    const touchableDefaults = (TouchableOpacity as any).defaultProps || {};
-    (TouchableOpacity as any).defaultProps = {
-      ...touchableDefaults,
-      activeOpacity: 0.7,
-    };
-  }, []);
 
   useEffect(() => {
     const fbAppId = process.env.EXPO_PUBLIC_FACEBOOK_APP_ID;
@@ -153,7 +155,7 @@ function RootLayoutContent() {
 
     const timer = setTimeout(() => {
       setIsSplashDelayDone(true);
-    }, 5000);
+    }, 2000);
 
     return () => clearTimeout(timer);
   }, [isAppShellReady]);
@@ -268,35 +270,29 @@ function RootLayoutContent() {
 
     let mounted = true;
 
+    // After sign-in: asks the OS once if this phone was never asked (so the first order's
+    // status pushes arrive), otherwise just reports the permission and registers the token.
+    // Customers who decline get the education screen after their first delivery
+    // (components/EngagementPrompts.tsx).
     const syncPushToken = async () => {
       try {
-        const tokenData = await notificationService.registerForPushNotificationsAsync();
-        if (!mounted || !tokenData) {
-          pushTokenSyncedForUidRef.current = user.uid;
-          return;
-        }
-
-        const shouldUpdateToken =
-          user.pushToken !== tokenData.token || user.pushTokenType !== tokenData.tokenType;
-
-        if (!shouldUpdateToken) {
-          pushTokenSyncedForUidRef.current = user.uid;
-          return;
-        }
-
-        const tokenUpdate = {
-          pushToken: tokenData.token,
-          pushTokenType: tokenData.tokenType,
-          pushTokenUpdatedAt: new Date().toISOString(),
-        };
-
-        await userService.updateUserProfile(user.uid, tokenUpdate);
-        await storageService.updateUserProfile(tokenUpdate);
-        pushTokenSyncedForUidRef.current = user.uid;
+        await askPermissionOnFirstSignIn(user.uid, { pushToken: user.pushToken, pushTokenType: user.pushTokenType });
+        syncCartNow(store);
+        if (mounted) pushTokenSyncedForUidRef.current = user.uid;
       } catch (error) {
         console.log('Push token sync failed:', error);
       }
     };
+
+    // Customers change notifications in device settings while the app is in the
+    // background — re-check whenever it comes back.
+    const resumeSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      const latest = store.getState().auth.user;
+      void refreshNotificationPermission(user.uid, { pushToken: latest?.pushToken, pushTokenType: latest?.pushTokenType }).catch((error) =>
+        console.log('Push permission refresh failed:', error)
+      );
+    });
 
     syncPushToken();
 
@@ -320,25 +316,77 @@ function RootLayoutContent() {
       } as never);
     };
 
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      const orderId = response?.notification?.request?.content?.data?.orderId as string | undefined;
-      handleNotificationRoute(orderId);
-    }).catch(() => {});
+    /** Order-status pushes open the order; automated (repeat-order / first-order / cart) pushes report the tap
+     *  and open their link — a restaurant link goes through the same pending-link path as a
+     *  shared link. Each notification is handled once (the last response is re-read on every
+     *  auth change). */
+    const handleNotificationResponse = (response: Notifications.NotificationResponse | null | undefined) => {
+      if (!response) return;
+      const id = response.notification.request.identifier;
+      if (id && handledNotificationIdsRef.current.has(id)) return;
+      if (id) handledNotificationIdsRef.current.add(id);
+      const data = (response.notification.request.content.data ?? {}) as Record<string, unknown>;
+      if (data.type === 'REPEAT_ORDER' || data.type === 'FIRST_ORDER' || data.type === 'ABANDONED_CART') {
+        const logId = String(data.notificationLogId || '');
+        if (logId) void notificationPreferenceService.reportOpened(logId).catch(() => {});
+        const link = parseDeepLink(String(data.link || ''));
+        if (link) void savePendingLink(link);
+        return;
+      }
+      handleNotificationRoute(data.orderId as string | undefined);
+    };
 
-    const responseSub = notificationService.addNotificationResponseListener((response) => {
-      const orderId = response.notification.request.content.data?.orderId as string | undefined;
-      handleNotificationRoute(orderId);
-    });
+    void Notifications.getLastNotificationResponseAsync().then(handleNotificationResponse).catch(() => {});
+
+    const responseSub = notificationService.addNotificationResponseListener(handleNotificationResponse);
 
     return () => {
       mounted = false;
       receiveSub.remove();
       responseSub.remove();
+      resumeSub.remove();
     };
   }, [isAuthenticated, user?.uid, user?.role]);
 
   useEffect(() => {
-    if (!isCheckingAuth && isSplashDelayDone) {
+    void storageService.hasSeenOnboarding().then(setHasSeenOnboarding);
+    startCartSync(store);
+  }, []);
+
+  // Ask for notifications up front: once the intro/splash is done, a signed-out customer on a
+  // never-asked phone sees the OS dialog right away (signed-in customers are asked by the
+  // sign-in sync above). Declining leads to the education screen after the first delivery.
+  const launchAskedRef = useRef(false);
+  useEffect(() => {
+    if (launchAskedRef.current || !isLaunchDone || isCheckingAuth || isAuthenticated) return;
+    launchAskedRef.current = true;
+    void notificationService
+      .askIfNeverAsked()
+      .then((r) => {
+        if (r) track(r.granted ? 'os_permission_granted' : 'os_permission_denied', { platform: Platform.OS, at: 'launch' });
+      })
+      .catch((error) => console.log('launch permission ask failed:', error));
+  }, [isAuthenticated, isCheckingAuth, isLaunchDone]);
+
+  useEffect(() => {
+    // Signed-in users skip the intro; record it so it never appears after a later logout.
+    if (hasSeenOnboarding === false && !isCheckingAuth && (isAuthenticated || incompleteSession)) {
+      setHasSeenOnboarding(true);
+      void storageService.markOnboardingSeen();
+    }
+  }, [hasSeenOnboarding, incompleteSession, isAuthenticated, isCheckingAuth]);
+
+  const finishOnboarding = useCallback(() => {
+    setHasSeenOnboarding(true);
+    void storageService.markOnboardingSeen();
+  }, []);
+
+  useEffect(() => {
+    if (!isCheckingAuth && isLaunchDone) {
+      // Signing in/out starts a fresh history (nothing to go "back" to across accounts).
+      // This used to be done by re-keying the whole <Stack>, which remounted it on the old
+      // route first — login flashed again before Home appeared.
+      if (router.canDismiss()) router.dismissAll();
       if (isAuthenticated) {
         if (!user?.uid) {
           dispatch(logout());
@@ -365,25 +413,29 @@ function RootLayoutContent() {
     // must only fire on auth-state changes, not on every navigation, or an
     // authenticated user gets force-redirected to the home tab on every route
     // change (e.g. Edit Profile bouncing straight back to Home).
-  }, [dispatch, incompleteSession, isAuthenticated, isCheckingAuth, isSplashDelayDone, openPendingRestaurant, user?.role, user?.uid]);
+  }, [dispatch, incompleteSession, isAuthenticated, isCheckingAuth, isLaunchDone, openPendingRestaurant, user?.role, user?.uid]);
 
   if (!isAppShellReady) {
     return <SplashScreen />;
   }
 
 
-  if (!isSplashDelayDone || isCheckingAuth) {
+  if (!isSplashDelayDone || isCheckingAuth || hasSeenOnboarding === null) {
     return <SplashScreen />;
+  }
+
+  if (showOnboarding) {
+    return <OnboardingSlides onFinish={finishOnboarding} />;
   }
 
   return (
     <AppStatusProvider>
       <AppAlertProvider>
-          <Stack key={isAuthenticated ? `auth-${user?.uid || user?.role || 'user'}` : 'guest'} screenOptions={{ headerShown: false }}>
+          <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="splash" />
-            <Stack.Screen name="login" />
-            <Stack.Screen name="complete-profile" />
-            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="login" options={{ animation: 'fade' }} />
+            <Stack.Screen name="complete-profile" options={{ animation: 'fade' }} />
+            <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
             {/* No swipe-back to checkout after placing an order; back goes Home (see order-success). */}
             <Stack.Screen name="order-success" options={{ gestureEnabled: false }} />
             <Stack.Screen name="user/chess" />
@@ -397,7 +449,9 @@ function RootLayoutContent() {
             <Stack.Screen name="user/order-success" options={{ gestureEnabled: false }} />
             <Stack.Screen name="user/privacy-policy" />
             <Stack.Screen name="user/product-details" />
+            <Stack.Screen name="user/favorites" />
             <Stack.Screen name="user/profile" />
+            <Stack.Screen name="user/notification-preferences" />
             <Stack.Screen name="user/refer-earn" />
             <Stack.Screen name="user/rewards" />
             <Stack.Screen name="user/restaurant-details" />

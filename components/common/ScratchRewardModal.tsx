@@ -1,10 +1,8 @@
 import ScratchCard, { type ScratchRewardView } from '@/components/ScratchCard';
-import { AppColors } from '@/constants/appColors';
+import { T } from '@/constants/tokens';
 import Ionicons from '@react-native-vector-icons/ionicons';
-import React from 'react';
-import { Image } from 'react-native';
-import { Modal } from 'react-native';
-import styled from 'styled-components/native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 type ScratchRewardModalProps = {
   visible: boolean;
@@ -15,6 +13,8 @@ type ScratchRewardModalProps = {
   onScratchComplete: () => void;
 };
 
+/** Pops a scratch card over the screen. The prize stays hidden under the card's cover —
+ *  nothing above the card gives it away. */
 export default function ScratchRewardModal({
   visible,
   reward,
@@ -23,270 +23,78 @@ export default function ScratchRewardModal({
   onClose,
   onScratchComplete,
 }: ScratchRewardModalProps) {
-  if (!visible || !reward) {
-    return null;
-  }
+  const appear = useRef(new Animated.Value(0)).current;
+  const open = visible && Boolean(reward);
+
+  useEffect(() => {
+    if (!open) return;
+    appear.setValue(0);
+    Animated.spring(appear, { toValue: 1, friction: 7, tension: 70, useNativeDriver: true }).start();
+  }, [open, appear]);
+
+  if (!open || !reward) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Overlay>
-        <Sheet>
-          <HeroSection>
-            <HeroGlow />
-            <CloseButton onPress={onClose}>
-              <Ionicons name="close" size={22} color="#23263a" />
-            </CloseButton>
+    <Modal visible transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+      <View style={styles.overlay}>
+        <Animated.View
+          style={[
+            styles.sheet,
+            {
+              opacity: appear.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: 'clamp' }),
+              transform: [{ scale: appear.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
+            },
+          ]}
+        >
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" hitSlop={8} onPress={onClose} style={styles.close}>
+            <Ionicons name="close" size={20} color={T.color.inkSoft} />
+          </Pressable>
 
-            <HeroContent>
-              <Title>{title}</Title>
-              <Subtitle>{subtitle}</Subtitle>
-              <Pill>
-                <Ionicons name="gift-outline" size={16} color={AppColors.primary} />
-                <PillText>Scratch now to reveal your surprise</PillText>
-              </Pill>
-            </HeroContent>
+          <View style={styles.header}>
+            <View style={styles.badge}>
+              <Ionicons name="gift" size={26} color="#fff" />
+            </View>
+            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.subtitle}>{subtitle}</Text>
+          </View>
 
-            <GiftWrap>
-              <GiftImage source={require('../../assets/images/logo.png')} resizeMode="contain" />
-            </GiftWrap>
-          </HeroSection>
+          <ScratchCard reward={reward} onScratchComplete={onScratchComplete} onContinue={onClose} variant="embedded" />
 
-          <RewardCard>
-            <RewardTop>
-              <RewardIconWrap>
-                <Ionicons name="restaurant-outline" size={24} color={AppColors.primary} />
-              </RewardIconWrap>
-              <RewardTextWrap>
-                <RewardTitle>{reward.title}</RewardTitle>
-                {!!reward.description && <RewardDescription>{reward.description}</RewardDescription>}
-                <RewardDateRow>
-                  <Ionicons name="calendar-outline" size={15} color="#81889b" />
-                  <RewardDateText>{reward.isCoinReward ? 'Reward will be credited after scratch' : 'Valid reward coupon'}</RewardDateText>
-                </RewardDateRow>
-              </RewardTextWrap>
-            </RewardTop>
-
-            <ScratchWrap>
-              <ScratchCard
-                reward={reward}
-                onScratchComplete={onScratchComplete}
-                onContinue={onClose}
-                variant="embedded"
-              />
-            </ScratchWrap>
-
-            <InfoNote>
-              <InfoIconWrap>
-                <Ionicons name="shield-checkmark" size={16} color={AppColors.white} />
-              </InfoIconWrap>
-              <InfoTextWrap>
-                <InfoText>Each scratch card can be used only once.</InfoText>
-                  <InfoText>
-                    {reward.isCoinReward
-                      ? 'Scratch to add coins in Reward coins instantly.'
-                      : 'Copy the coupon code and apply on checkout screen to use rewards.'}
-                  </InfoText>
-              </InfoTextWrap>
-            </InfoNote>
-          </RewardCard>
-        </Sheet>
-      </Overlay>
+          <View style={styles.note}>
+            <Ionicons name="shield-checkmark-outline" size={15} color={T.color.muted} />
+            <Text style={styles.noteText}>
+              {reward.isCoinReward
+                ? 'Each card can be scratched once. Coins go straight to your Reward coins.'
+                : 'Each card can be scratched once. Apply the code at checkout.'}
+            </Text>
+          </View>
+        </Animated.View>
+      </View>
     </Modal>
   );
 }
 
-const Overlay = styled.View`
-  flex: 1;
-  background-color: rgba(10, 15, 30, 0.5);
-  justify-content: center;
-  padding: 10px;
-`;
-
-const Sheet = styled.View`
-  border-radius: 22px;
-  background-color: #f7f9fc;
-  border-width: 1px;
-  border-color: rgba(222, 224, 230, 0.9);
-  overflow: hidden;
-  margin-horizontal: 5px;
-`;
-
-const HeroSection = styled.View`
-  background-color: #fff2df;
-  padding: 22px 18px 14px;
-`;
-
-const HeroGlow = styled.View`
-  position: absolute;
-  right: -28px;
-  bottom: -32px;
-  width: 240px;
-  height: 180px;
-  border-radius: 120px;
-  background-color: rgba(246, 135, 18, 0.08);
-`;
-
-const HeroContent = styled.View`
-  padding-right: 0;
-  margin-bottom: 10px;
-`;
-
-const HeaderTextWrap = styled.View`
-  padding-right: 10px;
-`;
-
-const GiftWrap = styled.View`
-  position: absolute;
-  right: 20px;
-  bottom: 10px;
-  width: 70px;
-  height: 70px;
-  border-radius: 35px;
-  overflow: hidden;
-  background-color: rgba(255, 255, 255, 0.55);
-`;
-
-const GiftImage = styled(Image)`
-  width: 100%;
-  height: 100%;
-  opacity: 0.55;
-`;
-
-const Pill = styled.View`
-  margin-top: 12px;
-  align-self: flex-start;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border-width: 1px;
-  border-color: #ffd4a6;
-  background-color: rgba(255, 255, 255, 0.72);
-  flex-direction: row;
-  align-items: center;
-`;
-
-const PillText = styled.Text`
-  margin-left: 8px;
-  color: #7a4a19;
-  font-size: 12px;
-  font-weight: 600;
-`;
-
-const RewardCard = styled.View`
-  margin: -10px 12px 12px;
-  border-radius: 22px;
-  border-width: 1px;
-  border-color: #eceff3;
-  background-color: #ffffff;
-  padding: 14px;
-`;
-
-const RewardTop = styled.View`
-  flex-direction: row;
-  align-items: flex-start;
-`;
-
-const RewardIconWrap = styled.View`
-  width: 48px;
-  height: 48px;
-  border-radius: 24px;
-  background-color: #fff4e2;
-  border-width: 1px;
-  border-color: #ffe1bd;
-  align-items: center;
-  justify-content: center;
-`;
-
-const RewardTextWrap = styled.View`
-  flex: 1;
-  margin-left: 12px;
-`;
-
-const RewardTitle = styled.Text`
-  font-size: 16px;
-  line-height: 20px;
-  font-weight: 800;
-  color: ${AppColors.primary};
-`;
-
-const RewardDescription = styled.Text`
-  margin-top: 4px;
-  color: #333b4d;
-  font-size: 13px;
-  line-height: 18px;
-`;
-
-const RewardDateRow = styled.View`
-  margin-top: 8px;
-  flex-direction: row;
-  align-items: center;
-`;
-
-const RewardDateText = styled.Text`
-  margin-left: 6px;
-  color: #6f778b;
-  font-size: 12px;
-  font-weight: 600;
-`;
-
-const ScratchWrap = styled.View`
-`;
-
-const InfoNote = styled.View`
-  margin-top: 12px;
-  border-radius: 14px;
-  background-color: #faf4ec;
-  padding: 12px;
-  flex-direction: row;
-  align-items: center;
-`;
-
-const InfoIconWrap = styled.View`
-  width: 34px;
-  height: 34px;
-  border-radius: 17px;
-  background-color: ${AppColors.primary};
-  align-items: center;
-  justify-content: center;
-`;
-
-const InfoTextWrap = styled.View`
-  margin-left: 10px;
-  flex: 1;
-`;
-
-const InfoText = styled.Text`
-  color: #344055;
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 600;
-`;
-
-const Title = styled.Text`
-  font-size: 18px;
-  line-height: 20px;
-  font-weight: 800;
-  color: #ef6d00;
-`;
-
-const Subtitle = styled.Text`
-  margin-top: 6px;
-  font-size: 14px;
-  line-height: 18px;
-  color: #2f3648;
-  font-weight: 600;
-`;
-
-const CloseButton = styled.TouchableOpacity`
-  width: 44px;
-  height: 44px;
-  border-radius: 22px;
-  background-color: #ffffff;
-  border-width: 1px;
-  border-color: #e8ebf2;
-  align-items: center;
-  justify-content: center;
-  position: absolute;
-  top: 16px;
-  right: 14px;
-  z-index: 5;
-`;
+const styles = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(28, 25, 23, 0.55)', justifyContent: 'center', padding: T.space.lg },
+  sheet: { borderRadius: 24, backgroundColor: T.color.surface, padding: T.space.lg, paddingTop: T.space.xl, ...T.shadow.float },
+  close: {
+    position: 'absolute',
+    top: T.space.md,
+    right: T.space.md,
+    zIndex: 2,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: T.color.canvas,
+    borderWidth: 1,
+    borderColor: T.color.line,
+  },
+  header: { alignItems: 'center', marginBottom: T.space.lg },
+  badge: { width: 56, height: 56, borderRadius: 28, backgroundColor: T.color.brand, alignItems: 'center', justifyContent: 'center', marginBottom: T.space.md },
+  title: { fontSize: T.font.heading + 2, fontWeight: '900', color: T.color.ink, textAlign: 'center' },
+  subtitle: { marginTop: 4, fontSize: T.font.body, color: T.color.muted, textAlign: 'center' },
+  note: { marginTop: T.space.md, flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' },
+  noteText: { flexShrink: 1, fontSize: T.font.small, color: T.color.muted, textAlign: 'center' },
+});

@@ -1,14 +1,16 @@
-import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import PageHeader from '@/components/common/PageHeader';
+import AppearIn from '@/components/common/AppearIn';
 import ScratchRewardModal from '@/components/common/ScratchRewardModal';
-import { AppColors } from '@/constants/appColors';
-import { rewardService, type UserRewardItem } from '@/services/rewardService';
+import { T } from '@/constants/tokens';
+import { rewardService, type RewardSummary, type UserRewardItem } from '@/services/rewardService';
+import { usePagedList } from '@/hooks/usePagedList';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import * as Clipboard from 'expo-clipboard';
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList } from 'react-native';
+import { router } from 'expo-router';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
-import styled from 'styled-components/native';
 import { RootState } from '../../store';
 
 const formatExpiryDate = (expiryMs: number) => {
@@ -22,468 +24,354 @@ const formatExpiryDate = (expiryMs: number) => {
   });
 };
 
+type RewardState = 'TO_SCRATCH' | 'COINS' | 'ACTIVE' | 'USED' | 'EXPIRED';
+type Filter = 'ALL' | 'TO_SCRATCH' | 'ACTIVE' | 'PAST';
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: 'ALL', label: 'All' },
+  { id: 'TO_SCRATCH', label: 'To scratch' },
+  { id: 'ACTIVE', label: 'Active' },
+  { id: 'PAST', label: 'Used & expired' },
+];
+
+const isCoinReward = (item: UserRewardItem) =>
+  String(item.rewardType || '').toUpperCase() === 'COINS' || Number(item.coinsEarned || 0) > 0;
+
+const rewardState = (item: UserRewardItem): RewardState => {
+  if (!item.scratched) return 'TO_SCRATCH';
+  if (isCoinReward(item)) return 'COINS';
+  const status = String(item.status || '').toUpperCase();
+  if (status === 'USED') return 'USED';
+  if (status === 'EXPIRED' || (Number(item.expiryMs || 0) > 0 && Number(item.expiryMs) <= Date.now())) return 'EXPIRED';
+  return 'ACTIVE';
+};
+
+const matchesFilter = (state: RewardState, filter: Filter) => {
+  if (filter === 'ALL') return true;
+  if (filter === 'TO_SCRATCH') return state === 'TO_SCRATCH';
+  if (filter === 'ACTIVE') return state === 'ACTIVE' || state === 'COINS';
+  return state === 'USED' || state === 'EXPIRED';
+};
+
+const EMPTY_COPY: Record<Filter, { title: string; text: string }> = {
+  ALL: { title: 'No rewards yet', text: 'Every order unlocks a scratch card. Place one to win coupons and coins.' },
+  TO_SCRATCH: { title: 'All scratched', text: 'You have no cards waiting. Your next order brings a new one.' },
+  ACTIVE: { title: 'No active rewards', text: 'Scratch a card to unlock a coupon or coins.' },
+  PAST: { title: 'Nothing here', text: 'Used and expired coupons will show up here.' },
+};
+
+type ActiveScratch = {
+  orderId: string;
+  title: string;
+  description: string;
+  couponCode: string;
+  isCoinReward?: boolean;
+  coinsEarned?: number;
+};
+
 export default function RewardsScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useSelector((state: RootState) => state.auth);
-  const [loading, setLoading] = useState(true);
-  const [rewards, setRewards] = useState<UserRewardItem[]>([]);
-  const [scratchModalVisible, setScratchModalVisible] = useState(false);
-  const [activeScratchReward, setActiveScratchReward] = useState<{
-    orderId: string;
-    title: string;
-    description: string;
-    couponCode: string;
-    isCoinReward?: boolean;
-    coinsEarned?: number;
-  } | null>(null);
+  const [filter, setFilter] = useState<Filter>('ALL');
+  const [activeScratchReward, setActiveScratchReward] = useState<ActiveScratch | null>(null);
   const [copiedCouponId, setCopiedCouponId] = useState('');
+  const [serverSummary, setServerSummary] = useState<RewardSummary | null>(null);
 
-  useEffect(() => {
-    let active = true;
+  // Pages of rewards from the API; each chip re-queries from page 1.
+  const list = usePagedList<UserRewardItem>(
+    async (page) => {
+      const result = await rewardService.pageUserRewards(page, filter === 'ALL' ? undefined : filter);
+      if (page === 1) setServerSummary(result.summary);
+      return { items: result.items, hasMore: result.hasMore };
+    },
+    (item) => `${item.couponId}-${item.orderId}`,
+    [filter, user?.uid],
+    { enabled: Boolean(user?.uid) }
+  );
+  const rewards = list.items;
+  const loading = list.loading && rewards.length === 0;
 
-    const loadRewards = async () => {
-      if (!user?.uid) {
-        if (active) {
-          setRewards([]);
-          setLoading(false);
-        }
-        return;
-      }
+  // The server counts every reward; an older backend sends no summary but returns them all,
+  // so counting the loaded ones gives the same numbers.
+  const summary = useMemo(() => {
+    if (serverSummary) return serverSummary;
+    let toScratch = 0;
+    let activeCoupons = 0;
+    let coins = 0;
+    rewards.forEach((item) => {
+      const state = rewardState(item);
+      if (state === 'TO_SCRATCH') toScratch++;
+      if (state === 'ACTIVE') activeCoupons++;
+      if (state === 'COINS') coins += Math.floor(Number(item.coinsEarned || 0));
+    });
+    return { toScratch, activeCoupons, coins };
+  }, [rewards, serverSummary]);
 
-      try {
-        if (active) setLoading(true);
-        const rows = await rewardService.listUserRewards(user.uid);
-        if (active) setRewards(rows);
-      } catch (_) {
-        if (active) setRewards([]);
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
+  const visible = useMemo(() => rewards.filter((item) => matchesFilter(rewardState(item), filter)), [rewards, filter]);
 
-    loadRewards();
-    return () => {
-      active = false;
-    };
-  }, [user?.uid]);
+  const copyCode = async (item: UserRewardItem) => {
+    if (!item.couponCode) return;
+    await Clipboard.setStringAsync(String(item.couponCode).trim());
+    setCopiedCouponId(item.couponId);
+    setTimeout(() => setCopiedCouponId((current) => (current === item.couponId ? '' : current)), 1200);
+  };
 
-  const pendingCount = useMemo(() => rewards.filter((item) => !item.scratched).length, [rewards]);
+  const openScratch = (item: UserRewardItem) => {
+    setActiveScratchReward({
+      orderId: item.orderId,
+      title: item.title || 'Reward',
+      description: item.description || 'Use this reward during checkout.',
+      couponCode: item.couponCode || 'PENDING',
+      isCoinReward: isCoinReward(item),
+      coinsEarned: Number(item.coinsEarned || 0),
+    });
+  };
+
+  const renderItem = ({ item, index }: { item: UserRewardItem; index: number }) => {
+    const state = rewardState(item);
+
+    if (state === 'TO_SCRATCH') {
+      return (
+        <AppearIn index={index}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Scratch this card" onPress={() => openScratch(item)} style={({ pressed }) => [styles.scratchTile, pressed && styles.pressed]}>
+            <View style={[styles.tileDot, { top: -30, right: -20, width: 110, height: 110 }]} />
+            <View style={[styles.tileDot, { bottom: -36, left: 40, width: 80, height: 80 }]} />
+            <View style={styles.tileIcon}><Ionicons name="gift" size={26} color={T.color.brand} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.tileTitle}>Scratch card waiting</Text>
+              <Text style={styles.tileText}>Tap to scratch and reveal your reward</Text>
+            </View>
+            <View style={styles.tileCta}>
+              <Text style={styles.tileCtaText}>Scratch</Text>
+              <Ionicons name="arrow-forward" size={14} color={T.color.brand} />
+            </View>
+          </Pressable>
+        </AppearIn>
+      );
+    }
+
+    if (state === 'COINS') {
+      const coins = Math.floor(Number(item.coinsEarned || 0));
+      return (
+        <AppearIn index={index} style={styles.card}>
+          <View style={styles.cardRow}>
+            <View style={[styles.cardIcon, { backgroundColor: '#fef3c7' }]}><Ionicons name="sparkles" size={20} color={T.color.star} /></View>
+            <View style={styles.cardBody}>
+              <Text style={styles.cardTitle}>{coins > 0 ? `You won ${coins} coins` : item.title || 'Reward coins'}</Text>
+              <Text style={styles.cardText}>Added to your Reward coins</Text>
+            </View>
+            <StatusPill label="Credited" tone="success" />
+          </View>
+        </AppearIn>
+      );
+    }
+
+    const past = state === 'USED' || state === 'EXPIRED';
+    return (
+      <AppearIn index={index} style={[styles.card, past && styles.cardPast]}>
+        <View style={styles.cardRow}>
+          <View style={[styles.cardIcon, past && { backgroundColor: T.color.line }]}>
+            <Ionicons name="pricetag" size={20} color={past ? T.color.faint : T.color.brand} />
+          </View>
+          <View style={styles.cardBody}>
+            <Text numberOfLines={2} style={[styles.cardTitle, past && { color: T.color.muted }]}>{item.title || 'Reward'}</Text>
+            {item.description ? <Text numberOfLines={2} style={styles.cardText}>{item.description}</Text> : null}
+          </View>
+          <StatusPill label={state === 'USED' ? 'Used' : state === 'EXPIRED' ? 'Expired' : 'Active'} tone={past ? 'muted' : 'success'} />
+        </View>
+
+        {/* Ticket perforation between the offer and its code. */}
+        <View style={styles.perforation}>
+          <View style={[styles.notch, { left: -22 }]} />
+          <View style={styles.perforationLine} />
+          <View style={[styles.notch, { right: -22 }]} />
+        </View>
+
+        <View style={styles.codeRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.codeLabel}>COUPON CODE</Text>
+            <Text selectable style={[styles.code, past && { color: T.color.faint, textDecorationLine: 'line-through' }]}>
+              {String(item.couponCode || 'PENDING').toUpperCase()}
+            </Text>
+          </View>
+          {!past ? (
+            <Pressable accessibilityRole="button" onPress={() => void copyCode(item)} style={styles.copy}>
+              <Ionicons name={copiedCouponId === item.couponId ? 'checkmark' : 'copy-outline'} size={15} color={T.color.brand} />
+              <Text style={styles.copyText}>{copiedCouponId === item.couponId ? 'Copied' : 'Copy'}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <View style={styles.metaRow}>
+          <Ionicons name={state === 'USED' ? 'checkmark-circle-outline' : 'calendar-outline'} size={14} color={T.color.muted} />
+          <Text style={styles.metaText}>
+            {state === 'USED' ? 'Coupon already used' : `${state === 'EXPIRED' ? 'Expired on' : 'Valid till'} ${formatExpiryDate(item.expiryMs)}`}
+          </Text>
+        </View>
+      </AppearIn>
+    );
+  };
+
+  const header = (
+    <>
+      <View style={styles.hero}>
+        <View style={[styles.tileDot, { top: -40, right: -30, width: 150, height: 150, backgroundColor: '#ffe2c6' }]} />
+        <Text style={styles.heroEyebrow}>YOUR REWARDS</Text>
+        <Text style={styles.heroTitle}>Scratch, win, save</Text>
+        <View style={styles.stats}>
+          <Stat value={summary.toScratch} label="To scratch" />
+          <View style={styles.statDivider} />
+          <Stat value={summary.activeCoupons} label="Active coupons" />
+          <View style={styles.statDivider} />
+          <Stat value={summary.coins} label="Coins won" />
+        </View>
+      </View>
+      <View style={styles.filters}>
+        {FILTERS.map((option) => (
+          <Pressable key={option.id} accessibilityRole="tab" accessibilityState={{ selected: filter === option.id }} onPress={() => setFilter(option.id)} style={[styles.chip, filter === option.id && styles.chipActive]}>
+            <Text style={[styles.chipText, filter === option.id && styles.chipTextActive]}>
+              {option.label}{option.id === 'TO_SCRATCH' && summary.toScratch > 0 ? ` · ${summary.toScratch}` : ''}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </>
+  );
+
+  const empty = loading ? (
+    <View style={styles.state}><ActivityIndicator color={T.color.brand} /></View>
+  ) : (
+    <View style={styles.state}>
+      <View style={styles.emptyIcon}><Ionicons name="gift-outline" size={34} color={T.color.brand} /></View>
+      <Text style={styles.emptyTitle}>{EMPTY_COPY[filter].title}</Text>
+      <Text style={styles.emptyText}>{EMPTY_COPY[filter].text}</Text>
+      {filter === 'ALL' ? (
+        <Pressable accessibilityRole="button" onPress={() => router.replace('/(tabs)' as never)} style={styles.emptyCta}>
+          <Text style={styles.emptyCtaText}>Order now</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
 
   return (
-    <Container>
+    <View style={styles.page}>
       <PageHeader title="Rewards" />
-
       <FlatList
-        data={rewards}
+        data={visible}
         keyExtractor={(item) => `${item.couponId}-${item.orderId}`}
-        contentContainerStyle={{
-          paddingHorizontal: 18,
-          paddingTop: 18,
-          paddingBottom: Math.max(insets.bottom + 24, 32),
-          gap: 12,
-        }}
-        ListHeaderComponent={
-          <>
-            <HeroCard>
-              <HeroEyebrow>Your rewards</HeroEyebrow>
-              <HeroTitle>Scratch cards and coupon wins in one place</HeroTitle>
-              <HeroSubtext>
-                Pending rewards: {pendingCount} of {rewards.length}
-              </HeroSubtext>
-            </HeroCard>
-
-            {loading ? (
-              <StateWrap>
-                <ActivityIndicator size="small" color={AppColors.primary} />
-              </StateWrap>
-            ) : null}
-
-            {!loading && rewards.length === 0 ? (
-              <EmptyCard>
-                <EmptyTitle>No rewards yet</EmptyTitle>
-                <EmptyText>Place an order to unlock scratch rewards here.</EmptyText>
-              </EmptyCard>
-            ) : null}
-          </>
-        }
-        renderItem={({ item }) => {
-          const isCoinReward = String(item.rewardType || '').toUpperCase() === 'COINS' || Number(item.coinsEarned || 0) > 0;
-          const normalizedStatus = String(item.status || '').toUpperCase();
-          const isUsed = !isCoinReward && normalizedStatus === 'USED';
-          const isExpired = !isCoinReward && !isUsed && (
-            normalizedStatus === 'EXPIRED' || (Number(item.expiryMs || 0) > 0 && Number(item.expiryMs) <= Date.now())
-          );
-          const showScratchPlaceholder = !item.scratched;
-          const isCopyDisabled = !item.scratched || isExpired || isUsed;
-          const dateLabel = isExpired ? 'Expired on' : 'Valid till';
-          const dateValue = formatExpiryDate(item.expiryMs);
-
-          const handleCopy = async () => {
-            if (isCopyDisabled || !item.couponCode) return;
-            await Clipboard.setStringAsync(String(item.couponCode || '').trim());
-            setCopiedCouponId(item.couponId);
-            setTimeout(() => {
-              setCopiedCouponId((current) => (current === item.couponId ? '' : current));
-            }, 1200);
-          };
-
-          return (
-            <RewardCard style={{ opacity: item.scratched && !isCoinReward && isExpired ? 0.72 : 1 }}>
-              <RewardContent>
-                <TopRow>
-                  {showScratchPlaceholder ? (
-                    <StatusPill style={{ backgroundColor: '#FFF4D8' }}>
-                      <StatusText style={{ color: '#B7791F' }}>Generated - Scratch pending</StatusText>
-                    </StatusPill>
-                  ) : isCoinReward ? (
-                    <StatusPill style={{ backgroundColor: '#EAF7EE' }}>
-                      <StatusText style={{ color: '#1B8F3A' }}>Coins reward</StatusText>
-                    </StatusPill>
-                  ) : (
-                    <StatusPill style={{ backgroundColor: isUsed ? '#EEF2F7' : (isExpired ? '#FDEAEA' : '#E7F7F3') }}>
-                      <StatusText style={{ color: isUsed ? '#4B5563' : (isExpired ? '#E53E3E' : '#16A34A') }}>
-                        {isUsed ? 'Used' : (isExpired ? 'Expired' : 'Active')}
-                      </StatusText>
-                    </StatusPill>
-                  )}
-                  <TopActions>
-                    <Ionicons name="ellipsis-horizontal" size={18} color="#1f2937" />
-                  </TopActions>
-                </TopRow>
-
-                <RewardName numberOfLines={2}>{item.title || 'Reward'}</RewardName>
-                <RewardDesc numberOfLines={2}>{item.description || 'Use this reward during checkout.'}</RewardDesc>
-
-                {showScratchPlaceholder ? (
-                  <ScratchPlaceholder
-                    onPress={() => {
-                      setActiveScratchReward({
-                        orderId: item.orderId,
-                        title: item.title || 'Reward',
-                        description: item.description || 'Use this reward during checkout.',
-                        couponCode: item.couponCode || 'PENDING',
-                        isCoinReward,
-                        coinsEarned: Number(item.coinsEarned || 0),
-                      });
-                      setScratchModalVisible(true);
-                    }}
-                  >
-                    <Ionicons name="hand-left-outline" size={30} color="#4B5563" />
-                    <ScratchPlaceholderText>Scratch here</ScratchPlaceholderText>
-                    <ScratchPlaceholderSubtext>to reveal</ScratchPlaceholderSubtext>
-                  </ScratchPlaceholder>
-                ) : (
-                  <>
-                    {isCoinReward ? (
-                      <CoinInfoCard>
-                        {Number(item.coinsEarned || 0) > 0 ? (
-                          <CoinInfoTitle>You won {Math.floor(Number(item.coinsEarned || 0))} coins</CoinInfoTitle>
-                        ) : null}
-                        <CoinInfoText>
-                          <Ionicons name="checkmark-circle" size={14} color="#1B8F3A" /> Scratched · added to your Reward coins
-                        </CoinInfoText>
-                      </CoinInfoCard>
-                    ) : (
-                      <>
-                        <CouponLabel>COUPON CODE</CouponLabel>
-                        <CouponCodeRow style={{ borderColor: isExpired ? '#E5E7EB' : '#FFD3AE' }}>
-                          <CouponCodeText style={{ color: isExpired ? '#9CA3AF' : '#111827' }}>
-                            {String(item.couponCode || 'PENDING').toUpperCase()}
-                          </CouponCodeText>
-                          {!isUsed && !isExpired ? (
-                            <CopyButton onPress={handleCopy} disabled={isCopyDisabled}>
-                              <Ionicons
-                                name="copy-outline"
-                                size={18}
-                                color={isCopyDisabled ? '#9CA3AF' : AppColors.primary}
-                              />
-                              <CopyButtonText style={{ color: isCopyDisabled ? '#9CA3AF' : AppColors.primary }}>
-                                {copiedCouponId === item.couponId ? 'Copied' : 'Copy'}
-                              </CopyButtonText>
-                            </CopyButton>
-                          ) : null}
-                        </CouponCodeRow>
-                      </>
-                    )}
-
-                    {!isCoinReward ? (
-                      isUsed ? (
-                        <DateRow>
-                          <Ionicons name="checkmark-circle-outline" size={16} color="#6B7280" />
-                          <DateText style={{ color: '#4B5563' }}>
-                            Coupon already used
-                          </DateText>
-                        </DateRow>
-                      ) : (
-                        <DateRow>
-                          <Ionicons name="calendar-outline" size={16} color={isExpired ? '#9CA3AF' : '#6B7280'} />
-                          <DateText style={{ color: isExpired ? '#6B7280' : '#374151' }}>
-                            {dateLabel} {dateValue}
-                          </DateText>
-                        </DateRow>
-                      )
-                    ) : null}
-                  </>
-                )}
-              </RewardContent>
-            </RewardCard>
-          );
-        }}
-        ListFooterComponent={!loading && rewards.length > 0 ? <FooterSpace /> : null}
+        renderItem={renderItem}
+        ListHeaderComponent={header}
+        ListEmptyComponent={empty}
+        contentContainerStyle={[styles.list, { paddingBottom: Math.max(insets.bottom + 24, 32) }]}
+        onEndReached={() => void list.loadMore()}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ paddingVertical: 16 }} color={T.color.brand} /> : null}
+        refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor={T.color.brand} colors={[T.color.brand]} />}
       />
 
       <ScratchRewardModal
-        visible={scratchModalVisible}
-        reward={
-          activeScratchReward
-            ? {
-                title: activeScratchReward.title,
-                description: activeScratchReward.description,
-                couponCode: activeScratchReward.couponCode,
-                isCoinReward: activeScratchReward.isCoinReward,
-                coinsEarned: activeScratchReward.coinsEarned,
-              }
-            : null
-        }
-        title="Congratulations"
-        subtitle="You have won a scratch card"
-        onClose={() => {
-          setScratchModalVisible(false);
-          setActiveScratchReward(null);
-        }}
+        visible={Boolean(activeScratchReward)}
+        reward={activeScratchReward}
+        title="You've won a scratch card"
+        subtitle="Scratch the card to reveal your reward"
+        onClose={() => setActiveScratchReward(null)}
         onScratchComplete={async () => {
           if (!activeScratchReward?.orderId) return;
           try {
             await rewardService.markOrderRewardGenerated(activeScratchReward.orderId, {
               scratched: true,
             });
-            setRewards((prev) =>
+            list.setItems((prev) =>
               prev.map((reward) =>
                 reward.orderId === activeScratchReward.orderId
                   ? { ...reward, scratched: true }
                   : reward
               )
             );
+            // Keep the server's counts in step without refetching.
+            setServerSummary((current) => current && {
+              toScratch: Math.max(0, current.toScratch - 1),
+              activeCoupons: current.activeCoupons + (activeScratchReward.isCoinReward ? 0 : 1),
+              coins: current.coins + (activeScratchReward.isCoinReward ? Math.floor(Number(activeScratchReward.coinsEarned || 0)) : 0),
+            });
           } catch (_) {
             // Ignore metadata update failure and keep reward visible.
           }
         }}
       />
-    </Container>
+    </View>
   );
 }
 
-const Container = styled(PageScreen)`
-  flex: 1;
-  background-color: #f7f8fa;
-`;
+function Stat({ value, label }: { value: number; label: string }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
 
+function StatusPill({ label, tone }: { label: string; tone: 'success' | 'muted' }) {
+  return (
+    <View style={[styles.pill, { backgroundColor: tone === 'success' ? T.color.successSoft : T.color.line }]}>
+      <Text style={[styles.pillText, { color: tone === 'success' ? T.color.success : T.color.muted }]}>{label}</Text>
+    </View>
+  );
+}
 
+const styles = StyleSheet.create({
+  page: { flex: 1, backgroundColor: T.color.canvas },
+  list: { paddingHorizontal: T.space.lg, paddingTop: T.space.lg, gap: T.space.md, flexGrow: 1 },
+  pressed: { opacity: 0.9, transform: [{ scale: 0.99 }] },
 
+  hero: { borderRadius: T.radius.lg + 4, padding: T.space.lg + 2, backgroundColor: T.color.brandSoft, borderWidth: 1, borderColor: T.color.brandBorder, overflow: 'hidden' },
+  heroEyebrow: { fontSize: T.font.caption, fontWeight: '800', letterSpacing: 0.8, color: T.color.brand },
+  heroTitle: { marginTop: 4, fontSize: 24, fontWeight: '900', color: T.color.ink },
+  stats: { marginTop: T.space.lg, flexDirection: 'row', alignItems: 'center', backgroundColor: T.color.surface, borderRadius: T.radius.md, paddingVertical: T.space.md },
+  stat: { flex: 1, alignItems: 'center' },
+  statValue: { fontSize: T.font.heading, fontWeight: '900', color: T.color.ink },
+  statLabel: { marginTop: 2, fontSize: T.font.caption, fontWeight: '600', color: T.color.muted },
+  statDivider: { width: 1, height: 28, backgroundColor: T.color.line },
 
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: T.space.sm, marginTop: T.space.lg, marginBottom: T.space.xs },
+  chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: T.radius.pill, borderWidth: 1, borderColor: T.color.line, backgroundColor: T.color.surface },
+  chipActive: { backgroundColor: T.color.ink, borderColor: T.color.ink },
+  chipText: { fontSize: T.font.small, fontWeight: '700', color: T.color.inkSoft },
+  chipTextActive: { color: '#fff' },
 
-const HeroCard = styled.View`
-  background-color: #ffffff;
-  border-radius: 24px;
-  padding: 20px;
-  margin-bottom: 16px;
-  border-width: 1px;
-  border-color: #eceff3;
-`;
+  scratchTile: { flexDirection: 'row', alignItems: 'center', gap: T.space.md, padding: T.space.lg, borderRadius: T.radius.lg, backgroundColor: T.color.brand, overflow: 'hidden', ...T.shadow.card },
+  tileDot: { position: 'absolute', borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.14)' },
+  tileIcon: { width: 48, height: 48, borderRadius: T.radius.md, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  tileTitle: { fontSize: T.font.title, fontWeight: '800', color: '#fff' },
+  tileText: { marginTop: 2, fontSize: T.font.small, color: 'rgba(255,255,255,0.88)' },
+  tileCta: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: T.radius.pill, backgroundColor: '#fff' },
+  tileCtaText: { fontSize: T.font.small, fontWeight: '800', color: T.color.brand },
 
-const HeroEyebrow = styled.Text`
-  font-size: 13px;
-  font-weight: 700;
-  color: ${AppColors.primary};
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-`;
+  card: { borderRadius: T.radius.lg, backgroundColor: T.color.surface, padding: T.space.lg, borderWidth: 1, borderColor: T.color.line, overflow: 'hidden', ...T.shadow.card },
+  cardPast: { opacity: 0.8 },
+  cardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: T.space.md },
+  cardIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: T.color.brandSoft, alignItems: 'center', justifyContent: 'center' },
+  cardBody: { flex: 1 },
+  cardTitle: { fontSize: T.font.title, fontWeight: '800', color: T.color.ink },
+  cardText: { marginTop: 2, fontSize: T.font.small, lineHeight: 17, color: T.color.muted },
+  pill: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: T.radius.pill },
+  pillText: { fontSize: T.font.caption, fontWeight: '800' },
 
-const HeroTitle = styled.Text`
-  margin-top: 8px;
-  font-size: 26px;
-  line-height: 32px;
-  font-weight: 800;
-  color: ${AppColors.textPrimary};
-`;
+  perforation: { marginVertical: T.space.md, height: 16, justifyContent: 'center' },
+  perforationLine: { borderTopWidth: 1.5, borderStyle: 'dashed', borderColor: T.color.line },
+  notch: { position: 'absolute', width: 16, height: 16, borderRadius: 8, backgroundColor: T.color.canvas, borderWidth: 1, borderColor: T.color.line },
 
-const HeroSubtext = styled.Text`
-  margin-top: 8px;
-  font-size: 14px;
-  color: ${AppColors.textSecondary};
-`;
+  codeRow: { flexDirection: 'row', alignItems: 'center' },
+  codeLabel: { fontSize: T.font.caption, fontWeight: '700', letterSpacing: 0.6, color: T.color.faint },
+  code: { marginTop: 2, fontSize: T.font.heading - 2, fontWeight: '900', letterSpacing: 1, color: T.color.ink },
+  copy: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 14, paddingVertical: 8, borderRadius: T.radius.pill, borderWidth: 1, borderColor: T.color.brandBorder, backgroundColor: T.color.brandSoft },
+  copyText: { fontSize: T.font.small, fontWeight: '800', color: T.color.brand },
+  metaRow: { marginTop: T.space.md, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  metaText: { fontSize: T.font.small, fontWeight: '600', color: T.color.muted },
 
-const StateWrap = styled.View`
-  align-items: center;
-  padding: 12px 0 4px;
-`;
-
-const EmptyCard = styled.View`
-  background-color: #ffffff;
-  border-radius: 20px;
-  padding: 20px;
-  border-width: 1px;
-  border-color: #eceff3;
-`;
-
-const EmptyTitle = styled.Text`
-  font-size: 18px;
-  font-weight: 700;
-  color: ${AppColors.textPrimary};
-`;
-
-const EmptyText = styled.Text`
-  margin-top: 8px;
-  font-size: 14px;
-  line-height: 20px;
-  color: ${AppColors.textSecondary};
-`;
-
-const RewardCard = styled.View`
-  border-radius: 18px;
-  background-color: #ffffff;
-  border-width: 1px;
-  border-color: #e6e8ec;
-  margin-bottom: 2px;
-  overflow: hidden;
-`;
-
-const RewardContent = styled.View`
-  padding: 14px 14px 15px;
-`;
-
-const TopRow = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-`;
-
-const TopActions = styled.View`
-  width: 24px;
-  align-items: center;
-`;
-
-const RewardName = styled.Text`
-  margin-top: 10px;
-  font-size: 20px;
-  line-height: 26px;
-  font-weight: 800;
-  color: #111827;
-`;
-
-const RewardDesc = styled.Text`
-  margin-top: 6px;
-  font-size: 14px;
-  line-height: 21px;
-  color: #374151;
-`;
-
-const ScratchPlaceholder = styled.TouchableOpacity`
-  margin-top: 10px;
-  border-radius: 14px;
-  border-width: 1px;
-  border-color: #d8dce3;
-  background-color: #eceef1;
-  min-height: 146px;
-  align-items: center;
-  justify-content: center;
-`;
-
-const ScratchPlaceholderText = styled.Text`
-  margin-top: 8px;
-  font-size: 19px;
-  line-height: 24px;
-  color: #1f2937;
-  font-weight: 800;
-`;
-
-const ScratchPlaceholderSubtext = styled.Text`
-  font-size: 18px;
-  line-height: 24px;
-  color: #4b5563;
-  font-weight: 700;
-`;
-
-const CouponLabel = styled.Text`
-  margin-top: 14px;
-  font-size: 12px;
-  color: #8b949e;
-  letter-spacing: 0.6px;
-  font-weight: 700;
-`;
-
-const CouponCodeRow = styled.View`
-  margin-top: 6px;
-  min-height: 52px;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  border-width: 1px;
-  border-style: dashed;
-  border-radius: 12px;
-  padding: 0 12px;
-`;
-
-const CouponCodeText = styled.Text`
-  font-size: 18px;
-  font-weight: 800;
-`;
-
-const CopyButton = styled.TouchableOpacity`
-  flex-direction: row;
-  align-items: center;
-`;
-
-const CopyButtonText = styled.Text`
-  margin-left: 6px;
-  font-size: 14px;
-  font-weight: 700;
-`;
-
-const StatusText = styled.Text`
-  font-size: 12px;
-  font-weight: 700;
-`;
-
-const StatusPill = styled.View`
-  padding: 7px 11px;
-  border-radius: 10px;
-`;
-
-const DateRow = styled.View`
-  margin-top: 12px;
-  flex-direction: row;
-  align-items: center;
-`;
-
-const DateText = styled.Text`
-  margin-left: 8px;
-  font-size: 13px;
-  font-weight: 600;
-`;
-
-const FooterSpace = styled.View`
-  height: 4px;
-`;
-
-const CoinInfoCard = styled.View`
-  margin-top: 10px;
-  border-width: 1px;
-  border-color: #ffe1bd;
-  border-radius: 12px;
-  background-color: #fff8ef;
-  padding: 12px;
-`;
-
-const CoinInfoTitle = styled.Text`
-  color: #9a5b1a;
-  font-size: 14px;
-  font-weight: 700;
-`;
-
-const CoinInfoText = styled.Text`
-  margin-top: 4px;
-  color: #5f6368;
-  font-size: 12px;
-  line-height: 18px;
-`;
+  state: { alignItems: 'center', paddingVertical: 48, paddingHorizontal: T.space.xl, gap: T.space.sm },
+  emptyIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: T.color.brandSoft, alignItems: 'center', justifyContent: 'center', marginBottom: T.space.xs },
+  emptyTitle: { fontSize: T.font.title + 1, fontWeight: '800', color: T.color.ink, textAlign: 'center' },
+  emptyText: { fontSize: T.font.body, lineHeight: 20, color: T.color.muted, textAlign: 'center' },
+  emptyCta: { marginTop: T.space.sm, paddingHorizontal: T.space.xl, paddingVertical: 11, borderRadius: T.radius.pill, backgroundColor: T.color.brand },
+  emptyCtaText: { color: '#fff', fontWeight: '800' },
+});

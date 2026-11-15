@@ -1,18 +1,23 @@
+import { PRIMARY_BUTTON_STYLE } from '@/components/common/AppButton';
+import AppearIn from '@/components/common/AppearIn';
+import { AppColors } from '@/constants/appColors';
 import HomeHeader from '@/components/HomeHeader';
 import NoRestaurantsHere from '@/components/NoRestaurantsHere';
 import { useCityName } from '@/hooks/useCityName';
 import AppImage from '@/components/AppImage';
-import { RestaurantCard, RestaurantMiniCard } from '@/components/RestaurantCard';
+import { RestaurantCard, RestaurantCompactCard, RestaurantMiniCard } from '@/components/RestaurantCard';
+import { T } from '@/constants/tokens';
 import { OfferCard } from '@/components/OfferCard';
 import AnnouncementBottomSheet from '@/components/AnnouncementBottomSheet';
+import EngagementPrompts from '@/components/EngagementPrompts';
 import { appUpdateService, AndroidAppUpdateConfig } from '@/services/appUpdateService';
 import { AnnouncementConfig, subscribeToAnnouncement } from '@/services/appConfigService';
 import { hydrateCachedLocationAddress, warmupUserLocationCache } from '@/services/locationCacheService';
-import { getRestaurants, searchRestaurantsAndMenuItems, matchesRestaurantFoodFilter, RestaurantFoodFilter, RestaurantRecord, SearchResults, EMPTY_SEARCH_RESULTS } from '@/services/restaurantService';
+import { getRestaurantsByIds, getRestaurantsPage, searchRestaurantsAndMenuItems, RestaurantFoodFilter, RestaurantRecord, SearchResults, EMPTY_SEARCH_RESULTS } from '@/services/restaurantService';
 import FoodTypeMark from '@/components/common/FoodTypeMark';
 import type { FoodType } from '@/types/Product';
 import { setActiveRestaurant } from '@/services/restaurantContext';
-import { getMyOrders } from '@/services/orderService';
+import { getMyOrdersPage } from '@/services/orderService';
 import { getOffersNearYou, OfferRecord } from '@/services/offersService';
 import { Coordinates } from '@/utils/locationUtils';
 import Ionicons from '@react-native-vector-icons/ionicons';
@@ -20,11 +25,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Text, View, Animated, BackHandler, Easing, FlatList, Linking, Modal, Platform, Pressable, ScrollView, ToastAndroid, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Image, Text, View, Animated, BackHandler, Easing, FlatList, Linking, Modal, Platform, Pressable, ScrollView, ToastAndroid, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
-import { notificationService } from '../services/notificationService';
 import { userService } from '../services/userService';
 import { AppDispatch, RootState } from '../store';
 import { setUser } from '../store/slices/authSlice';
@@ -37,6 +41,8 @@ import { isRateLimited } from '@/utils/apiClient';
 
 
 const FALLBACK_CAFE_IMAGE = 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1200&q=80';
+const NO_RESTAURANTS: RestaurantWithRating[] = [];
+const restaurantRowKey = (restaurant: RestaurantWithRating) => String(restaurant.id || restaurant.restaurantId || restaurant.cafeId || restaurant.name);
 const ANDROID_UPDATE_DISMISSED_VERSION_KEY = 'android_update_dismissed_version';
 const ANDROID_UPDATE_DISMISSED_CONTEXT_KEY = 'android_update_dismissed_context';
 // How long to wait after Home gains focus before revealing the announcement sheet.
@@ -45,6 +51,7 @@ const ANNOUNCEMENT_REVEAL_DELAY_MS = 3000;
 const ACTIVE_ORDER_POLL_MS = 20_000;
 const IDLE_ORDER_POLL_MS = 90_000;
 const PROFILE_REFRESH_MS = 120_000;
+const RECENT_ORDERS_LIMIT = 20;
 const LISTS_FRESH_MS = 60_000;
 
 const FALLBACK_HOME_CATEGORIES = [
@@ -166,7 +173,25 @@ export default function HomeScreen() {
   const authUser = useSelector((state: RootState) => state.auth.user);
   const cartItems = useSelector((state: RootState) => state.cart.items);
   const dispatch = useDispatch<AppDispatch>();
-  const [restaurants, setRestaurants] = useState<RestaurantWithRating[]>([]);
+  // Home's restaurant list pages in from the API (getRestaurantsPage) — `mainRestaurants` is
+  // the ranked, food-filtered list loaded so far; the carousels and Order Again come with it.
+  const [mainRestaurants, setMainRestaurants] = useState<RestaurantWithRating[]>([]);
+  const [highlights, setHighlights] = useState<{ sponsored: RestaurantWithRating[]; newRestaurants: RestaurantWithRating[] }>({ sponsored: [], newRestaurants: [] });
+  const [orderAgainPool, setOrderAgainPool] = useState<RestaurantWithRating[]>([]);
+  const [unfilteredTotal, setUnfilteredTotal] = useState(0);
+  const [restaurantsHasMore, setRestaurantsHasMore] = useState(false);
+  const [loadingMoreRestaurants, setLoadingMoreRestaurants] = useState(false);
+  const restaurantsPageRef = useRef(1);
+  const loadingMoreRestaurantsRef = useRef(false);
+  // Every restaurant row known on this screen, for lookups (hero, offer cards, active-order
+  // banners) — not a list that's shown as-is.
+  const restaurants = useMemo(() => {
+    const byId = new Map<string, RestaurantWithRating>();
+    [...mainRestaurants, ...highlights.sponsored, ...highlights.newRestaurants, ...orderAgainPool].forEach((row) => {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    });
+    return [...byId.values()];
+  }, [mainRestaurants, highlights, orderAgainPool]);
   const restaurantsRef = useRef<RestaurantWithRating[]>([]);
   useEffect(() => {
     restaurantsRef.current = restaurants;
@@ -178,19 +203,16 @@ export default function HomeScreen() {
   // Veg / non-veg preference — applies to every restaurant discovery list on Home (not
   // Order Again, which is the customer's own history). Defaults to All.
   const [foodFilter, setFoodFilter] = useState<RestaurantFoodFilter>('ALL');
-  const foodFilteredRestaurants = useMemo(
-    () => restaurants.filter((r) => matchesRestaurantFoodFilter(r, foodFilter)),
-    [restaurants, foodFilter]
-  );
-  const newRestaurants = useMemo(() => foodFilteredRestaurants.filter((r) => r.isNew), [foodFilteredRestaurants]);
-  const sponsoredRestaurants = useMemo(() => foodFilteredRestaurants.filter((r) => r.isSponsored), [foodFilteredRestaurants]);
+  // The API applies the food filter to the main list and both carousels.
+  const newRestaurants = highlights.newRestaurants;
+  const sponsoredRestaurants = highlights.sponsored;
   const [homeCategories, setHomeCategories] = useState<HomeCategoryItem[]>(FALLBACK_HOME_CATEGORIES);
 
   // "All" (id '0') shows everything; any other chip filters the main Restaurants list
   // below by matching its label against each restaurant's own cuisine/food-type tags.
   const [showFilters, setShowFilters] = useState(false);
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
-  const filteredRestaurants = foodFilteredRestaurants;
+  const filteredRestaurants = mainRestaurants;
   const selectedLatitude = useSelector((state: RootState) => state.location.latitude);
   const selectedLongitude = useSelector((state: RootState) => state.location.longitude);
   const cityName = useCityName(selectedLatitude, selectedLongitude);
@@ -209,7 +231,7 @@ export default function HomeScreen() {
   const [recentOrderBranchIds, setRecentOrderBranchIds] = useState<string[]>([]);
   const orderAgainRestaurants = useMemo(() => {
     if (recentOrderBranchIds.length === 0) return [];
-    const byId = new Map(restaurants.map((r) => [String(r.id || r.restaurantId || r.cafeId || ''), r]));
+    const byId = new Map([...restaurants, ...orderAgainPool].map((r) => [String(r.id || r.restaurantId || r.cafeId || ''), r]));
     const seen = new Set<string>();
     const result: RestaurantWithRating[] = [];
     for (const branchId of recentOrderBranchIds) {
@@ -221,7 +243,7 @@ export default function HomeScreen() {
       if (result.length >= 8) break;
     }
     return result;
-  }, [recentOrderBranchIds, restaurants]);
+  }, [recentOrderBranchIds, restaurants, orderAgainPool]);
 
   // "Offers Near You" — real coupons attached to real nearby branches (see
   // services/offersService.ts / backend's publicOrderingService.getOffersNearYou).
@@ -283,7 +305,9 @@ export default function HomeScreen() {
   const [isAnnouncementVisible, setIsAnnouncementVisible] = useState(false);
   const activeOrdersListRef = useRef<FlatList<ActiveOrderBannerItem> | null>(null);
 
+  // Skeleton shimmer runs only while loading — a forever loop kept the UI thread animating.
   useEffect(() => {
+    if (!loading) return;
     const shimmerLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(shimmerOpacity, {
@@ -303,7 +327,7 @@ export default function HomeScreen() {
 
     shimmerLoop.start();
     return () => shimmerLoop.stop();
-  }, [shimmerOpacity]);
+  }, [loading, shimmerOpacity]);
 
   const totalCartCount = cartItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
 
@@ -357,21 +381,6 @@ export default function HomeScreen() {
     Boolean(authUser?.uid)
   );
 
-  useEffect(() => {
-    if (!authUser?.uid) return;
-    // Update FCM token on app start/login
-    (async () => {
-      const push = await notificationService.registerForPushNotificationsAsync();
-      if (push?.token && push?.tokenType && authUser?.uid) {
-        await userService.updateUserProfile(authUser.uid, {
-          pushToken: push.token,
-          pushTokenType: push.tokenType,
-          pushTokenUpdatedAt: new Date().toISOString(),
-        });
-      }
-    })();
-  }, [authUser?.uid]);
-
   // Real-time announcement config — data is kept in state independently of
   // when the bottom sheet is actually revealed (see the focus-effect timer
   // below, which just gates *when* to show whatever is currently known).
@@ -389,7 +398,8 @@ export default function HomeScreen() {
     });
 
     return () => unsubscribe();
-  }, [restaurants]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurants[0]?.id]);
 
   useEffect(() => {
     if (!isAndroid) return;
@@ -448,35 +458,82 @@ export default function HomeScreen() {
     loadUpdateConfig();
   }, [appVersion, expoConfigVersion, isAndroid, nativeAppVersion]);
 
+  const withRatings = (rows: RestaurantRecord[]) =>
+    rows.map((restaurant) => ({ ...restaurant, rating: Number(restaurant.rating || 0), ratingCount: Number(restaurant.ratingCount || 0) } as RestaurantWithRating));
+
+  // Page 1 of the ranked list (plus the carousels). Deliberately NOT re-sorted here — the
+  // backend's ranking engine (restaurantRanking.service.ts) already returns rows in final
+  // ranked order (organic score + sponsored/new boosts + fairness rotation).
   const loadRestaurants = useCallback(async () => {
     const requestId = ++restaurantRequestId.current;
-    setRestaurants([]);
     if (!authUser?.uid && !authUser?.email) {
-      setRestaurants([]);
+      setMainRestaurants([]);
+      setHighlights({ sponsored: [], newRestaurants: [] });
       setLoading(false);
       return;
     }
 
     try {
       setLoading(true);
-      // Ratings come from the directory itself: the average of every dish rating each
-      // restaurant has received (see restaurantService.mapDirectoryRestaurant).
-      //
-      // Deliberately NOT re-sorted here — the backend's ranking engine
-      // (restaurantRanking.service.ts) already returns these in final ranked order
-      // (organic score + sponsored/new-restaurant boosts + fairness rotation); an
-      // alphabetical/displayOrder re-sort on top would silently discard all of that.
-      const list = (await getRestaurants(deviceCoords)).filter((restaurantDoc: any) => restaurantDoc.available !== false);
-
-      const withRatings = list.map((restaurant) => ({ ...restaurant, rating: Number(restaurant.rating || 0), ratingCount: Number(restaurant.ratingCount || 0) } as RestaurantWithRating));
-
-      if (requestId === restaurantRequestId.current) setRestaurants(withRatings);
+      const page = await getRestaurantsPage(deviceCoords, 1, foodFilter);
+      if (requestId !== restaurantRequestId.current) return;
+      restaurantsPageRef.current = 1;
+      setMainRestaurants(withRatings(page.items));
+      setHighlights({ sponsored: withRatings(page.sponsored), newRestaurants: withRatings(page.newRestaurants) });
+      setUnfilteredTotal(page.unfilteredTotal);
+      setRestaurantsHasMore(page.hasMore);
     } catch (error) {
       console.error('Failed to load restaurants:', error);
     } finally {
       if (requestId === restaurantRequestId.current) setLoading(false);
     }
-  }, [authUser?.uid, authUser?.email, deviceCoords]);
+  }, [authUser?.uid, authUser?.email, deviceCoords, foodFilter]);
+
+  /** Next page of the main list, when the list nears its end. */
+  const loadMoreRestaurants = useCallback(async () => {
+    if (loading || !restaurantsHasMore || loadingMoreRestaurantsRef.current) return;
+    const requestId = restaurantRequestId.current;
+    loadingMoreRestaurantsRef.current = true;
+    setLoadingMoreRestaurants(true);
+    try {
+      const nextPage = restaurantsPageRef.current + 1;
+      const page = await getRestaurantsPage(deviceCoords, nextPage, foodFilter);
+      if (requestId !== restaurantRequestId.current) return;
+      restaurantsPageRef.current = nextPage;
+      setMainRestaurants((current) => {
+        const seen = new Set(current.map((row) => String(row.id)));
+        return [...current, ...withRatings(page.items).filter((row) => !seen.has(String(row.id)))];
+      });
+      setRestaurantsHasMore(page.hasMore);
+    } catch (error) {
+      console.warn('Failed to load more restaurants:', error);
+    } finally {
+      loadingMoreRestaurantsRef.current = false;
+      setLoadingMoreRestaurants(false);
+    }
+  }, [loading, restaurantsHasMore, deviceCoords, foodFilter]);
+
+  // A different food chip re-queries the list from page 1 (offers don't depend on it).
+  const foodFilterLoadedRef = useRef(foodFilter);
+  useEffect(() => {
+    if (foodFilterLoadedRef.current === foodFilter) return;
+    foodFilterLoadedRef.current = foodFilter;
+    void loadRestaurants();
+  }, [foodFilter, loadRestaurants]);
+
+  // Order Again's restaurants, fetched by id so they show whatever page they rank on.
+  useEffect(() => {
+    if (recentOrderBranchIds.length === 0) {
+      setOrderAgainPool([]);
+      return;
+    }
+    let active = true;
+    getRestaurantsByIds(recentOrderBranchIds, deviceCoords)
+      .then((rows) => { if (active) setOrderAgainPool(withRatings(rows)); })
+      .catch((error) => console.warn('Failed to load Order Again restaurants:', error));
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentOrderBranchIds.join('|'), deviceCoords]);
 
   const loadOffers = useCallback(async () => {
     const requestId = ++offerRequestId.current;
@@ -592,8 +649,8 @@ export default function HomeScreen() {
       .sort((a, b) => getOrderCreatedAtMs(b) - getOrderCreatedAtMs(a));
     hasActiveOrdersRef.current = activeOrders.length > 0;
 
-    setActiveOrderBanners(
-      activeOrders
+    // Unchanged polls keep the previous arrays so Home doesn't re-render every tick.
+    const banners: ActiveOrderBannerItem[] = activeOrders
         .map((order): ActiveOrderBannerItem => {
           const kind = orderKindOf(order?.orderType);
           return {
@@ -611,8 +668,8 @@ export default function HomeScreen() {
             isDelivery: kind === 'delivery',
           };
         })
-        .filter((item) => Boolean(item.orderId))
-    );
+        .filter((item) => Boolean(item.orderId));
+    setActiveOrderBanners((prev) => (JSON.stringify(prev) === JSON.stringify(banners) ? prev : banners));
 
     // "Order Again": every branch this account has ordered from (cancelled/rejected-only
     // history doesn't count), most recent first.
@@ -627,14 +684,15 @@ export default function HomeScreen() {
         seen.add(branchId);
         branchIds.push(branchId);
       });
-    setRecentOrderBranchIds(branchIds);
+    setRecentOrderBranchIds((prev) => (prev.join('|') === branchIds.join('|') ? prev : branchIds));
   };
 
   usePolling(
     async () => {
       if (!authUser?.uid) return;
       try {
-        applyMyOrders(await getMyOrders());
+        // Active orders and "Order Again" only need the newest orders, not the full history.
+        applyMyOrders((await getMyOrdersPage(null, RECENT_ORDERS_LIMIT)).orders);
       } catch (error) {
         if (!isRateLimited(error)) console.error('Order status poll failed:', error);
       }
@@ -671,7 +729,7 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [activeOrderBanners.length, activeOrderCardWidth]);
 
-  const handleOpenRestaurant = (restaurant: RestaurantWithRating, categoryId?: string) => {
+  const handleOpenRestaurant = useCallback((restaurant: RestaurantWithRating, categoryId?: string) => {
     router.push({
       pathname: '/user/restaurant-details',
       params: {
@@ -679,20 +737,19 @@ export default function HomeScreen() {
         categoryId: categoryId || '0',
       },
     });
-  };
+  }, []);
+  // Stable per-card handlers (cards are memoized and hand their restaurant back).
+  const openRestaurantMenu = useCallback((restaurant: RestaurantRecord) => handleOpenRestaurant(restaurant as RestaurantWithRating), [handleOpenRestaurant]);
 
-  // Delivery orders open live tracking; takeaway/dine-in open the order's details.
+  // Every order opens the tracking screen (map for delivery, status details for takeaway/dine-in).
   const handleTrackActiveOrder = useCallback((item: ActiveOrderBannerItem) => {
     if (!item.orderId) return;
-    if (!item.isDelivery) {
-      router.push(`/order/${item.orderId}` as never);
-      return;
-    }
     router.push({ pathname: '/user/track-order', params: { orderId: item.orderId, status: item.rawStatus } });
   }, []);
 
 
   const primaryRestaurant = restaurants[0] || null;
+  const showRestaurantRows = !searchQuery.trim() && !loading;
   const shimmerAnimatedStyle = { opacity: shimmerOpacity };
 
   const openCafeDetails = useCallback((restaurantItem: RestaurantWithRating) => {
@@ -732,6 +789,17 @@ export default function HomeScreen() {
       },
     });
   }, [restaurants]);
+  const openRestaurantDetails = useCallback((restaurant: RestaurantRecord) => openCafeDetails(restaurant as RestaurantWithRating), [openCafeDetails]);
+  const closeExpandedThen = useCallback(<T,>(open: (item: T) => void) => (item: T) => { setExpandedSection(null); open(item); }, []);
+  const expandedOpenMenu = useMemo(() => closeExpandedThen(openRestaurantMenu), [closeExpandedThen, openRestaurantMenu]);
+  const expandedOpenDetails = useMemo(() => closeExpandedThen(openRestaurantDetails), [closeExpandedThen, openRestaurantDetails]);
+  const expandedOfferPress = useMemo(() => closeExpandedThen(handleOfferPress), [closeExpandedThen, handleOfferPress]);
+
+  // Main restaurant list rows — virtualized by the screen's FlatList (only a few cards and
+  // their cover photos are mounted at a time, instead of every restaurant in the city).
+  const renderRestaurantRow = useCallback(({ item, index }: { item: RestaurantWithRating; index: number }) => (
+    <AppearIn index={index}><RestaurantCard restaurant={item} onViewMenu={openRestaurantMenu} onViewDetails={openRestaurantDetails} /></AppearIn>
+  ), [openRestaurantMenu, openRestaurantDetails]);
 
   // A craving chip runs the same platform-wide search as typing it into the search box
   // (restaurants, cuisines, menu categories and dishes); "All" clears the search.
@@ -791,7 +859,7 @@ export default function HomeScreen() {
                   });
                   setIsUpdateModalVisible(false);
                 }}
-                style={{ backgroundColor: '#FF9800' }}
+                style={{ backgroundColor: AppColors.cta }}
               >
                 <ModalButtonText>Update Now</ModalButtonText>
               </ModalButton>
@@ -807,7 +875,7 @@ export default function HomeScreen() {
             <Pressable accessibilityRole="button" accessibilityLabel="Close section" onPress={() => setExpandedSection(null)} style={{ padding: 10 }}><Ionicons name="close" size={24} color="#333" /></Pressable>
           </View>
           <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 24, gap: 14 }}>
-            {expandedSection === 'Offers Near You' ? offers.map(offer => <OfferCard key={offer.offerId} offer={offer} fullWidth onPress={() => { setExpandedSection(null); handleOfferPress(offer); }} />) : (expandedSection === 'Order Again' ? orderAgainRestaurants : expandedSection === 'Recommended for You' ? sponsoredRestaurants : newRestaurants).map(restaurant => <RestaurantCard key={restaurant.id} restaurant={restaurant} onViewMenu={() => { setExpandedSection(null); handleOpenRestaurant(restaurant); }} onViewDetails={() => { setExpandedSection(null); openCafeDetails(restaurant); }} />)}
+            {expandedSection === 'Offers Near You' ? offers.map((offer, index) => <AppearIn key={offer.offerId} index={index}><OfferCard offer={offer} fullWidth onPress={expandedOfferPress} /></AppearIn>) : (expandedSection === 'Order Again' ? orderAgainRestaurants : expandedSection === 'Recommended for You' ? sponsoredRestaurants : newRestaurants).map((restaurant, index) => <AppearIn key={restaurant.id} index={index}><RestaurantCard restaurant={restaurant} onViewMenu={expandedOpenMenu} onViewDetails={expandedOpenDetails} /></AppearIn>)}
           </ScrollView>
         </View>
       </Modal>
@@ -820,14 +888,26 @@ export default function HomeScreen() {
         onClose={() => setIsAnnouncementVisible(false)}
       />
 
-      <ScrollView
+      {/* Delivered-order rating popup / notification permission screen — one per session,
+          never over another Home modal. */}
+      <EngagementPrompts blocked={isUpdateModalVisible || isAnnouncementVisible || showFilters || expandedSection !== null} />
+
+      <FlatList
+        data={showRestaurantRows ? filteredRestaurants : NO_RESTAURANTS}
+        onEndReached={showRestaurantRows ? () => void loadMoreRestaurants() : undefined}
+        onEndReachedThreshold={0.8}
+        keyExtractor={restaurantRowKey}
+        renderItem={renderRestaurantRow}
+        initialNumToRender={3}
+        maxToRenderPerBatch={4}
+        windowSize={7}
         showsVerticalScrollIndicator={false}
         removeClippedSubviews={false}
         contentContainerStyle={{
           paddingHorizontal: 12,
           paddingBottom: activeOrderBanners.length > 0 ? 150 : Math.max(28, insets.bottom + 24),
         }}
-      >
+        ListHeaderComponent={<>
         <View style={{ flexDirection: 'row', gap: 10 }}><SearchBar style={{ flex: 1 }}>
           <Ionicons name="search-outline" size={moderateScale(20)} color="#8b8b8b" />
           <SearchInput
@@ -861,7 +941,7 @@ export default function HomeScreen() {
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginVertical: 20 }}>
               {homeCategories.map(category => <Pressable key={category.id} accessibilityRole="button" accessibilityState={{ selected: isCravingSelected(category) }} onPress={() => handleCravingPress(category)} style={{ padding: 12, borderRadius: 20, backgroundColor: isCravingSelected(category) ? '#ff6b00' : '#fff0e3' }}><Text style={{ color: isCravingSelected(category) ? '#fff' : '#653919', fontWeight: '600' }}>{category.label}</Text></Pressable>)}
             </View>
-            <ModalButton onPress={() => setShowFilters(false)} style={{ backgroundColor: '#ff6b00' }}><ModalButtonText>Done</ModalButtonText></ModalButton>
+            <ModalButton onPress={() => setShowFilters(false)} style={{ backgroundColor: AppColors.cta }}><ModalButtonText>Done</ModalButtonText></ModalButton>
           </ModalCard></ModalOverlay>
         </Modal>
 
@@ -890,13 +970,14 @@ export default function HomeScreen() {
                     <SectionHeader>
                       <ExploreSectionHeading>Restaurants</ExploreSectionHeading>
                     </SectionHeader>
-                    {searchResults.restaurants.map((restaurantItem) => (
-                      <RestaurantCard
-                        key={String(restaurantItem.id)}
-                        restaurant={restaurantItem}
-                        onViewMenu={() => handleOpenRestaurant(restaurantItem as RestaurantWithRating)}
-                        onViewDetails={() => openCafeDetails(restaurantItem as RestaurantWithRating)}
-                      />
+                    {searchResults.restaurants.map((restaurantItem, index) => (
+                      <AppearIn key={String(restaurantItem.id)} index={index}>
+                        <RestaurantCard
+                          restaurant={restaurantItem}
+                          onViewMenu={openRestaurantMenu}
+                          onViewDetails={openRestaurantDetails}
+                        />
+                      </AppearIn>
                     ))}
                   </>
                 ) : null}
@@ -912,7 +993,7 @@ export default function HomeScreen() {
                           {cuisine.name} · {cuisine.restaurants.length} {cuisine.restaurants.length === 1 ? 'restaurant' : 'restaurants'}
                         </SearchGroupLabel>
                         {cuisine.restaurants.map((restaurantItem) => (
-                          <DishResultCard key={`${cuisine.name}-${restaurantItem.id}`} activeOpacity={0.88} onPress={() => handleOpenRestaurant(restaurantItem as RestaurantWithRating)}>
+                          <DishResultCard key={`${cuisine.name}-${restaurantItem.id}`} activeOpacity={0.8} onPress={() => handleOpenRestaurant(restaurantItem as RestaurantWithRating)}>
                             <DishResultImage>
                               <AppImage uri={restaurantItem.image} fallbackUri={FALLBACK_CAFE_IMAGE} style={{ width: '100%', height: '100%' }} />
                             </DishResultImage>
@@ -936,7 +1017,7 @@ export default function HomeScreen() {
                     {searchResults.categories.map((category) => (
                       <DishResultCard
                         key={`${category.id}-${category.restaurant.id}`}
-                        activeOpacity={0.88}
+                        activeOpacity={0.8}
                         onPress={() => handleOpenRestaurant(category.restaurant as RestaurantWithRating, category.id)}
                       >
                         <DishResultImage>
@@ -960,7 +1041,7 @@ export default function HomeScreen() {
                     {searchResults.menuItems.map((item) => (
                       <DishResultCard
                         key={item.id}
-                        activeOpacity={0.88}
+                        activeOpacity={0.8}
                         onPress={() => handleOpenRestaurant(item.restaurant as RestaurantWithRating)}
                       >
                         <DishResultImage>
@@ -1003,20 +1084,20 @@ export default function HomeScreen() {
               })}
             </View>
 
-            <HeroBanner accessibilityRole="button" accessibilityLabel="Order food from nearby restaurants" activeOpacity={0.92} onPress={() => primaryRestaurant && handleOpenRestaurant(primaryRestaurant)}>
+            <HeroBanner accessibilityRole="button" accessibilityLabel="Order food from nearby restaurants" activeOpacity={0.8} onPress={() => primaryRestaurant && handleOpenRestaurant(primaryRestaurant)}>
               <HeroBannerIconWrap>
-                <Image source={require('../assets/images/biryani_banner.png')} style={{ position: 'absolute', width: '240%', height: '145%', left: '-132%', top: '-5%' }} resizeMode="cover" />
+                <Image source={require('../assets/images/biryani_banner.jpg')} style={{ position: 'absolute', width: '240%', height: '145%', left: '-132%', top: '-5%' }} resizeMode="cover" />
               </HeroBannerIconWrap>
               <HeroBannerContent>
-                <Text style={{ color: '#b66324', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 9 }}>{cityName ? `TASTE OF ${cityName.toUpperCase()}` : 'TASTE OF YOUR CITY'}</Text>
+                <Text style={{ color: '#b66324', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 5 }}>{cityName ? `TASTE OF ${cityName.toUpperCase()}` : 'TASTE OF YOUR CITY'}</Text>
                 <HeroBannerTitle>Good Food{'\n'}<Text style={{ color: '#ff6b00' }}>Happier Days!</Text></HeroBannerTitle>
-                <HeroBannerSubtitle>Your favourite restaurants,{'\n'}now closer than ever.</HeroBannerSubtitle>
-                <HeroBannerCta><HeroBannerCtaText>Order Now</HeroBannerCtaText><Ionicons name="arrow-forward" size={18} color="#fff" /></HeroBannerCta>
+                <HeroBannerSubtitle numberOfLines={1}>Your favourites, closer than ever.</HeroBannerSubtitle>
+                <HeroBannerCta><HeroBannerCtaText>Order Now</HeroBannerCtaText><Ionicons name="arrow-forward" size={16} color="#fff" /></HeroBannerCta>
               </HeroBannerContent>
             </HeroBanner>
             <TrustStrip>
-              {[['bicycle-outline', 'Fast Delivery', 'At your doorstep'], ['shield-checkmark-outline', 'Trusted Restaurants', 'Quality & hygiene'], ['pricetag-outline', 'Great Offers', 'Save more'], ['heart-outline', 'Supporting Local', 'Grow together']].map(([icon, title, caption]) => (
-                <TrustItem key={title}><Ionicons name={icon} size={24} color="#ff6b00" /><TrustText>{title}</TrustText><Text style={{ fontSize: 9, color: '#8a7769', textAlign: 'center', marginTop: 3 }}>{caption}</Text></TrustItem>
+              {[['bicycle-outline', 'Fast delivery'], ['shield-checkmark-outline', 'Trusted kitchens'], ['pricetag-outline', 'Great offers'], ['heart-outline', 'Support local']].map(([icon, title]) => (
+                <TrustItem key={title}><Ionicons name={icon} size={18} color={T.color.brand} /><TrustText numberOfLines={2}>{title}</TrustText></TrustItem>
               ))}
             </TrustStrip>
 
@@ -1028,14 +1109,11 @@ export default function HomeScreen() {
                   <SectionHeadingGroup><SectionHeading>Order Again</SectionHeading><SectionSubheading>Your recent favourites</SectionSubheading></SectionHeadingGroup>
                   <SectionLink accessibilityRole="button" accessibilityLabel="View all Order Again" onPress={() => setExpandedSection('Order Again')}><SectionLinkText>View All</SectionLinkText><Ionicons name="arrow-forward" size={15} color="#ff6b00" /></SectionLink>
                 </SectionHeader>
-                <DealsScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start' }}>
-                  {orderAgainRestaurants.map((restaurantItem) => (
-                    <RestaurantMiniCard
-                      actionLabel="Order Again"
-                      key={`order-again-${String(restaurantItem.id || restaurantItem.name)}`}
-                      restaurant={restaurantItem}
-                      onPress={() => handleOpenRestaurant(restaurantItem)}
-                    />
+                <DealsScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start', gap: 10 }}>
+                  {orderAgainRestaurants.map((restaurantItem, index) => (
+                    <AppearIn key={`order-again-${String(restaurantItem.id || restaurantItem.name)}`} index={index} from="left">
+                      <RestaurantCompactCard restaurant={restaurantItem} onPress={openRestaurantMenu} />
+                    </AppearIn>
                   ))}
                 </DealsScroll>
               </>
@@ -1050,13 +1128,10 @@ export default function HomeScreen() {
                   <SectionLink accessibilityRole="button" accessibilityLabel="View all Recommended for You" onPress={() => setExpandedSection('Recommended for You')}><SectionLinkText>View All</SectionLinkText><Ionicons name="arrow-forward" size={15} color="#ff6b00" /></SectionLink>
                 </SectionHeader>
                 <DealsScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start' }}>
-                  {sponsoredRestaurants.map((restaurantItem) => (
-                    <RestaurantMiniCard
-                      key={`sponsored-${String(restaurantItem.id || restaurantItem.name)}`}
-                      restaurant={restaurantItem}
-                      badge="Sponsored"
-                      onPress={() => handleOpenRestaurant(restaurantItem)}
-                    />
+                  {sponsoredRestaurants.map((restaurantItem, index) => (
+                    <AppearIn key={`sponsored-${String(restaurantItem.id || restaurantItem.name)}`} index={index} from="left">
+                      <RestaurantMiniCard restaurant={restaurantItem} badge="Sponsored" onPress={openRestaurantMenu} />
+                    </AppearIn>
                   ))}
                 </DealsScroll>
               </>
@@ -1072,8 +1147,10 @@ export default function HomeScreen() {
                   <SectionLink accessibilityRole="button" accessibilityLabel="View all Offers Near You" onPress={() => setExpandedSection('Offers Near You')}><SectionLinkText>View All</SectionLinkText><Ionicons name="arrow-forward" size={15} color="#ff6b00" /></SectionLink>
                 </SectionHeader>
                 <DealsScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start', paddingBottom: 6, paddingHorizontal: 2 }}>
-                  {offers.map((offer) => (
-                    <OfferCard key={offer.offerId} offer={offer} onPress={() => handleOfferPress(offer)} />
+                  {offers.map((offer, index) => (
+                    <AppearIn key={offer.offerId} index={index} from="left">
+                      <OfferCard offer={offer} onPress={handleOfferPress} />
+                    </AppearIn>
                   ))}
                 </DealsScroll>
               </>
@@ -1091,13 +1168,10 @@ export default function HomeScreen() {
                   <SectionLink accessibilityRole="button" accessibilityLabel="View all New on Prayagi" onPress={() => setExpandedSection('New on Prayagi')}><SectionLinkText>View All</SectionLinkText><Ionicons name="arrow-forward" size={15} color="#ff6b00" /></SectionLink>
                 </SectionHeader>
                 <DealsScroll horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'flex-start' }}>
-                  {newRestaurants.map((restaurantItem) => (
-                    <RestaurantMiniCard
-                      key={`new-${String(restaurantItem.id || restaurantItem.name)}`}
-                      restaurant={restaurantItem}
-                      badge="New"
-                      onPress={() => handleOpenRestaurant(restaurantItem)}
-                    />
+                  {newRestaurants.map((restaurantItem, index) => (
+                    <AppearIn key={`new-${String(restaurantItem.id || restaurantItem.name)}`} index={index} from="left">
+                      <RestaurantMiniCard restaurant={restaurantItem} badge="New" onPress={openRestaurantMenu} />
+                    </AppearIn>
                   ))}
                 </DealsScroll>
               </>
@@ -1108,36 +1182,34 @@ export default function HomeScreen() {
             </SectionHeader>
 
             {loading ? (
-              <SkeletonCard>
-                <ShimmerBlock style={[shimmerAnimatedStyle, { width: '100%', height: moderateVerticalScale(150) }]} />
-                <SkeletonCardContent>
-                  <ShimmerBlock style={[shimmerAnimatedStyle, { width: '60%', height: moderateVerticalScale(18), borderRadius: moderateScale(8), marginBottom: moderateVerticalScale(8) }]} />
-                  <ShimmerBlock style={[shimmerAnimatedStyle, { width: '40%', height: moderateVerticalScale(12), borderRadius: moderateScale(6), marginBottom: moderateVerticalScale(10) }]} />
-                  <ShimmerButtonRow>
-                    <ShimmerBlock style={[shimmerAnimatedStyle, { flex: 1, height: moderateVerticalScale(34), borderRadius: moderateScale(8), marginRight: moderateScale(8) }]} />
-                    <ShimmerBlock style={[shimmerAnimatedStyle, { flex: 1, height: moderateVerticalScale(34), borderRadius: moderateScale(8) }]} />
-                  </ShimmerButtonRow>
-                </SkeletonCardContent>
-              </SkeletonCard>
-            ) : filteredRestaurants.length > 0 ? (
-              filteredRestaurants.map((restaurantItem) => (
-                <RestaurantCard
-                  key={String(restaurantItem.id || restaurantItem.restaurantId || restaurantItem.cafeId || restaurantItem.name)}
-                  restaurant={restaurantItem}
-                  onViewMenu={() => handleOpenRestaurant(restaurantItem)}
-                  onViewDetails={() => openCafeDetails(restaurantItem)}
-                />
-              ))
-            ) : restaurants.length > 0 ? (
-              <EmptyText>{foodFilter !== 'ALL' && foodFilteredRestaurants.length === 0 ? 'No restaurants match this food preference right now.' : 'No restaurants available right now.'}</EmptyText>
+              // Same shape as RestaurantCard (photo left, text right) so nothing jumps when the list arrives.
+              <>
+                {[0, 1, 2].map((row) => (
+                  <SkeletonCard key={row}>
+                    <ShimmerBlock style={[shimmerAnimatedStyle, { width: moderateScale(104), height: moderateScale(104), borderRadius: T.radius.md }]} />
+                    <SkeletonCardContent>
+                      <ShimmerBlock style={[shimmerAnimatedStyle, { width: '70%', height: moderateVerticalScale(16), borderRadius: moderateScale(8), marginBottom: moderateVerticalScale(8) }]} />
+                      <ShimmerBlock style={[shimmerAnimatedStyle, { width: '45%', height: moderateVerticalScale(12), borderRadius: moderateScale(6), marginBottom: moderateVerticalScale(12) }]} />
+                      <ShimmerBlock style={[shimmerAnimatedStyle, { width: '60%', height: moderateVerticalScale(12), borderRadius: moderateScale(6) }]} />
+                    </SkeletonCardContent>
+                  </SkeletonCard>
+                ))}
+              </>
+            ) : filteredRestaurants.length > 0 ? null : unfilteredTotal > 0 ? (
+              <EmptyText>{foodFilter !== 'ALL' ? 'No restaurants match this food preference right now.' : 'No restaurants available right now.'}</EmptyText>
             ) : (
               <NoRestaurantsHere city={cityName} />
             )}
+          </>
+        )}
+        </>}
+        ListFooterComponent={searchQuery.trim().length > 0 ? null : <>
+            {loadingMoreRestaurants ? <View style={{ paddingVertical: 16 }}><ActivityIndicator color={T.color.brand} /></View> : null}
 
-
-            {loading ? (
+            {/* "Scratch & Win" banner hidden: new scratch cards are no longer issued (2026-11-09). */}
+            {!SHOW_SCRATCH_BANNER ? null : loading ? (
               <ScratchCard disabled>
-                <ShimmerBlock style={[shimmerAnimatedStyle, { width: moderateScale(56), height: moderateVerticalScale(56), borderRadius: moderateScale(14) }]} />
+                <ShimmerBlock style={[shimmerAnimatedStyle, { width: moderateScale(48), height: moderateScale(48), borderRadius: T.radius.md }]} />
                 <ScratchContent>
                   <ShimmerBlock style={[shimmerAnimatedStyle, { width: '70%', height: moderateVerticalScale(18), borderRadius: moderateScale(9), marginBottom: moderateVerticalScale(8), marginLeft: moderateScale(10) }]} />
                   <ShimmerBlock style={[shimmerAnimatedStyle, { width: '90%', height: moderateVerticalScale(12), borderRadius: moderateScale(6), marginLeft: moderateScale(10) }]} />
@@ -1145,25 +1217,23 @@ export default function HomeScreen() {
                 <ShimmerBlock style={[shimmerAnimatedStyle, { width: moderateScale(90), height: moderateVerticalScale(34), borderRadius: moderateScale(10) }]} />
               </ScratchCard>
             ) : (
-              <ScratchCard activeOpacity={0.9} onPress={() => router.push('/user/rewards')}>
+              <ScratchCard activeOpacity={0.8} onPress={() => router.push('/user/rewards')} accessibilityRole="button" accessibilityLabel="Scratch and win. Open your rewards">
+                <ScratchGlow />
                 <ScratchIconWrap>
-                  <Ionicons name="gift-outline" size={moderateScale(34)} color="#fff" />
+                  <Ionicons name="gift" size={moderateScale(24)} color="#fff" />
                 </ScratchIconWrap>
                 <ScratchContent>
                   <ScratchTitle>Scratch & Win</ScratchTitle>
-                  <ScratchSubtitle>Exciting rewards await you!</ScratchSubtitle>
+                  <ScratchSubtitle numberOfLines={2}>Every order unlocks a scratch card</ScratchSubtitle>
                 </ScratchContent>
                 <ScratchCta>
-                  <ScratchCtaText>Scratch Now</ScratchCtaText>
+                  <ScratchCtaText>Scratch</ScratchCtaText>
+                  <Ionicons name="arrow-forward" size={14} color="#fff" />
                 </ScratchCta>
               </ScratchCard>
             )}
-
-
-
-          </>
-        )}
-      </ScrollView>
+        </>}
+      />
 
       {activeOrderBanners.length > 0 ? (
         <ActiveOrdersStrip style={{ bottom: 0 }}>
@@ -1186,7 +1256,7 @@ export default function HomeScreen() {
             }}
             renderItem={({ item }) => (
               <ActiveOrderSlide style={{ width: activeOrderCardWidth }}>
-                <ActiveOrderBar activeOpacity={0.9} onPress={() => handleTrackActiveOrder(item)} accessibilityRole="button" accessibilityLabel={`${item.statusLabel}. ${item.message}. Track order`}>
+                <ActiveOrderBar activeOpacity={0.8} onPress={() => handleTrackActiveOrder(item)} accessibilityRole="button" accessibilityLabel={`${item.statusLabel}. ${item.message}. Track order`}>
                   <ActiveOrderRow>
                     <ActiveOrderLogo>
                       {item.logoUrl ? (
@@ -1203,7 +1273,7 @@ export default function HomeScreen() {
                       </ActiveOrderMeta>
                     </ActiveOrderContent>
                     <ActiveOrderTrackButton pointerEvents="none">
-                      <ActiveOrderTrackText>{item.isDelivery ? 'Track' : 'View'}</ActiveOrderTrackText>
+                      <ActiveOrderTrackText>{item.isDelivery ? 'Track' : 'Status'}</ActiveOrderTrackText>
                       <Ionicons name="chevron-forward" size={moderateScale(16)} color="#fff" />
                     </ActiveOrderTrackButton>
                   </ActiveOrderRow>
@@ -1216,7 +1286,9 @@ export default function HomeScreen() {
           />
           {activeOrderBanners.length > 1 ? (
             <ActiveOrderDotsRow>
-              {activeOrderBanners.map((item, index) => (
+              {activeOrderBanners.length > 5 ? (
+                <ActiveOrderCounter>{activeOrderIndex + 1} of {activeOrderBanners.length} active orders · swipe</ActiveOrderCounter>
+              ) : activeOrderBanners.map((item, index) => (
                 <ActiveOrderDot key={`${item.orderId}-${index}`} $active={index === activeOrderIndex} />
               ))}
             </ActiveOrderDotsRow>
@@ -1226,14 +1298,15 @@ export default function HomeScreen() {
 
       {totalCartCount > 0 ? (
         <HomeCartFab
-          activeOpacity={0.88}
+          activeOpacity={0.8}
           onPress={() => router.push('/user/cart')}
-          style={{ bottom: activeOrderBanners.length > 0 ? moderateVerticalScale(128) : Math.max(moderateVerticalScale(24), insets.bottom + moderateVerticalScale(12)) }}
+          accessibilityRole="button"
+          accessibilityLabel={`View cart, ${totalCartCount} items`}
+          style={{ ...T.shadow.float, bottom: activeOrderBanners.length > 0 ? moderateVerticalScale(128) : Math.max(moderateVerticalScale(24), insets.bottom + moderateVerticalScale(12)) }}
         >
-          <Ionicons name="cart-outline" size={moderateScale(30)} color="#fff" />
-          <HomeCartBadge>
-            <HomeCartBadgeText>{totalCartCount}</HomeCartBadgeText>
-          </HomeCartBadge>
+          <Ionicons name="bag-handle" size={moderateScale(18)} color="#fff" />
+          <HomeCartFabText>{totalCartCount} item{totalCartCount === 1 ? '' : 's'} · View cart</HomeCartFabText>
+          <Ionicons name="chevron-forward" size={moderateScale(16)} color="#fff" />
         </HomeCartFab>
       ) : null}
 
@@ -1296,9 +1369,9 @@ const ModalActions = styled.View`
 
 const ModalButton = styled(Pressable)`
   min-width: ${moderateScale(110)}px;
-  padding-vertical: ${moderateVerticalScale(12)}px;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
   padding-horizontal: ${moderateScale(16)}px;
-  border-radius: ${moderateScale(12)}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
   justify-content: center;
   align-items: center;
   margin-left: ${moderateScale(10)}px;
@@ -1327,7 +1400,7 @@ const SearchTabsScroll = styled.ScrollView`
   margin-bottom: 4px;
 `;
 
-const SearchTabChip = styled.TouchableOpacity<{ $active: boolean }>`
+const SearchTabChip = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $active: boolean }>`
   padding: 8px 14px;
   border-radius: 18px;
   border-width: 1px;
@@ -1368,7 +1441,7 @@ const SearchInput = styled.TextInput`
   font-weight: 500;
 `;
 
-const SearchClearButton = styled.TouchableOpacity`
+const SearchClearButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding: ${moderateScale(4)}px;
 `;
 
@@ -1380,7 +1453,7 @@ const SearchStatusText = styled.Text`
   margin-bottom: ${moderateVerticalScale(24)}px;
 `;
 
-const DishResultCard = styled.TouchableOpacity`
+const DishResultCard = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex-direction: row;
   align-items: center;
   background-color: #fff;
@@ -1428,14 +1501,19 @@ const ShimmerBlock = styled(Animated.View)`
 `;
 
 const SkeletonCard = styled.View`
-  border-radius: ${moderateScale(18)}px;
-  overflow: hidden;
-  background-color: #fff;
-  margin-bottom: ${moderateVerticalScale(16)}px;
+  flex-direction: row;
+  border-radius: ${T.radius.lg}px;
+  padding: 10px;
+  background-color: ${T.color.surface};
+  border-width: 1px;
+  border-color: ${T.color.line};
+  margin-bottom: 12px;
 `;
 
 const SkeletonCardContent = styled.View`
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(14)}px ${moderateVerticalScale(14)}px;
+  flex: 1;
+  padding-left: 12px;
+  justify-content: center;
 `;
 
 const ShimmerCategoriesRow = styled.View`
@@ -1446,10 +1524,6 @@ const CategorySkeletonWrap = styled.View`
   width: ${moderateScale(84)}px;
   margin-right: ${moderateScale(10)}px;
   align-items: center;
-`;
-
-const ShimmerButtonRow = styled.View`
-  flex-direction: row;
 `;
 
 const SectionHeader = styled.View`
@@ -1475,19 +1549,19 @@ const SectionSubheading = styled.Text`
   font-weight: 500;
 `;
 
-const HeroBanner = styled.TouchableOpacity`
+const HeroBanner = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background-color: #ffe9cf;
-  border-radius: 20px;
-  min-height: 210px;
-  padding: 20px;
+  border-radius: ${T.radius.lg + 4}px;
+  min-height: 136px;
+  padding: 14px 18px;
   overflow: hidden;
 `;
 const HeroBannerContent = styled.View`width: 66%; z-index: 1;`;
-const HeroBannerTitle = styled.Text`color: #211a15; font-size: ${scaleFont(26)}px; font-weight: 900; line-height: ${scaleFont(28)}px;`;
-const HeroBannerSubtitle = styled.Text`margin-top: 9px; color: #604932; font-size: ${scaleFont(12)}px; line-height: 18px;`;
-const HeroBannerCta = styled.View`flex-direction: row; align-items: center; align-self: flex-start; margin-top: 16px; background-color: #ff6b00; border-radius: 11px; padding: 11px 16px;`;
-const HeroBannerCtaText = styled.Text`color: #fff; font-size: 14px; font-weight: 800; margin-right: 12px;`;
-const HeroBannerIconWrap = styled.View`position: absolute; right: -28px; bottom: -22px; width: 45%; height: 175px; border-radius: 90px; overflow: hidden; background-color: #f8c18b;`;
+const HeroBannerTitle = styled.Text`color: #211a15; font-size: ${scaleFont(21)}px; font-weight: 900; line-height: ${scaleFont(24)}px;`;
+const HeroBannerSubtitle = styled.Text`margin-top: 5px; color: #604932; font-size: ${scaleFont(12)}px; line-height: 18px;`;
+const HeroBannerCta = styled.View`flex-direction: row; align-items: center; align-self: flex-start; margin-top: 10px; background-color: #ff6b00; border-radius: 10px; padding: 8px 14px;`;
+const HeroBannerCtaText = styled.Text`color: #fff; font-size: 13px; font-weight: 800; margin-right: 8px;`;
+const HeroBannerIconWrap = styled.View`position: absolute; right: -24px; bottom: -18px; width: 40%; height: 140px; border-radius: 72px; overflow: hidden; background-color: #f8c18b;`;
 
 const ExploreSectionHeading = styled.Text`
   color: #161616;
@@ -1495,7 +1569,7 @@ const ExploreSectionHeading = styled.Text`
   font-weight: 900;
 `;
 
-const SectionLink = styled.TouchableOpacity`
+const SectionLink = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex-direction: row;
   align-items: center;
 `;
@@ -1514,115 +1588,111 @@ const DealsScroll = styled.ScrollView`
   margin-bottom: ${moderateVerticalScale(14)}px;
 `;
 
-const ScratchCard = styled.TouchableOpacity`
-  border-radius: ${moderateScale(16)}px;
-  background-color: #c85c20;
+/** New scratch cards are no longer issued — the banner promising one per order stays hidden. */
+const SHOW_SCRATCH_BANNER = false;
+
+const ScratchCard = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  border-radius: ${T.radius.lg}px;
+  background-color: ${T.color.brandSoft};
+  border-width: 1px;
+  border-color: ${T.color.brandBorder};
   flex-direction: row;
   align-items: center;
   padding: ${moderateScale(14)}px;
   margin-bottom: ${moderateVerticalScale(14)}px;
   margin-top: ${moderateVerticalScale(14)}px;
+  overflow: hidden;
 `;
-
+/** Soft brand-tinted circle peeking in from the top-right corner. */
+const ScratchGlow = styled.View`
+  position: absolute;
+  top: -${moderateScale(40)}px;
+  right: -${moderateScale(24)}px;
+  width: ${moderateScale(120)}px;
+  height: ${moderateScale(120)}px;
+  border-radius: ${moderateScale(60)}px;
+  background-color: #ffe2c6;
+`;
 const ScratchIconWrap = styled.View`
-  width: ${moderateScale(56)}px;
-  height: ${moderateVerticalScale(56)}px;
-  border-radius: ${moderateScale(14)}px;
-  background-color: rgba(255, 255, 255, 0.2);
+  width: ${moderateScale(48)}px;
+  height: ${moderateScale(48)}px;
+  border-radius: ${T.radius.md}px;
+  background-color: ${T.color.brand};
   align-items: center;
   justify-content: center;
 `;
-
 const ScratchContent = styled.View`
   flex: 1;
-  padding-left: ${moderateScale(10)}px;
+  padding-horizontal: ${moderateScale(12)}px;
 `;
-
 const ScratchTitle = styled.Text`
-  color: #fff;
-  font-size: ${scaleFont(25)}px;
-  font-weight: 900;
+  color: ${T.color.ink};
+  font-size: ${scaleFont(17)}px;
+  font-weight: 800;
 `;
-
 const ScratchSubtitle = styled.Text`
   margin-top: ${moderateVerticalScale(2)}px;
-  color: rgba(255, 255, 255, 0.88);
-  font-size: ${scaleFont(14)}px;
-  font-weight: 600;
+  color: ${T.color.muted};
+  font-size: ${scaleFont(12)}px;
+  line-height: ${scaleFont(16)}px;
 `;
-
 const ScratchCta = styled.View`
-  border-radius: ${moderateScale(10)}px;
-  padding: ${moderateVerticalScale(10)}px ${moderateScale(12)}px;
-  background-color: rgba(255, 255, 255, 0.2);
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  border-radius: ${T.radius.pill}px;
+  padding: ${moderateVerticalScale(8)}px ${moderateScale(14)}px;
+  background-color: ${T.color.brand};
 `;
-
 const ScratchCtaText = styled.Text`
   color: #fff;
   font-size: ${scaleFont(13)}px;
   font-weight: 800;
 `;
 
-const HomeCartFab = styled.TouchableOpacity`
+const HomeCartFab = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   position: absolute;
   right: ${moderateScale(16)}px;
-  width: ${moderateScale(62)}px;
-  height: ${moderateVerticalScale(62)}px;
-  border-radius: ${moderateScale(31)}px;
-  background-color: #ff6b00;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  shadow-color: #000;
-  shadow-opacity: 0.2;
-  shadow-radius: ${moderateScale(8)}px;
-  shadow-offset: 0px ${moderateVerticalScale(4)}px;
-  elevation: 8;
+  height: ${moderateVerticalScale(48)}px;
+  padding: 0 ${moderateScale(16)}px;
+  border-radius: ${T.radius.pill}px;
+  background-color: ${T.color.brand};
   z-index: 50;
 `;
 
-const HomeCartBadge = styled.View`
-  position: absolute;
-  top: ${moderateVerticalScale(-4)}px;
-  right: ${moderateScale(-2)}px;
-  min-width: ${moderateScale(22)}px;
-  height: ${moderateVerticalScale(22)}px;
-  border-radius: ${moderateScale(11)}px;
-  background-color: #ef4444;
-  border-width: 2px;
-  border-color: #fff;
-  align-items: center;
-  justify-content: center;
-  padding-horizontal: ${moderateScale(4)}px;
-`;
-
-const HomeCartBadgeText = styled.Text`
+const HomeCartFabText = styled.Text`
+  margin: 0 ${moderateScale(6)}px 0 ${moderateScale(8)}px;
   color: #fff;
-  font-size: ${scaleFont(11)}px;
+  font-size: ${scaleFont(14)}px;
   font-weight: 800;
 `;
 
 const TrustStrip = styled.View`
   flex-direction: row;
-  border-width: 1px;
-  border-color: #f0eadf;
-  background-color: #fffcf5;
-  border-radius: ${moderateScale(14)}px;
-  padding: ${moderateScale(10)}px;
   justify-content: space-between;
-  margin-bottom: ${moderateVerticalScale(10)}px;
-  margin-top: ${moderateVerticalScale(10)}px;
+  margin-top: ${moderateVerticalScale(12)}px;
+  margin-bottom: ${moderateVerticalScale(4)}px;
 `;
 
 const TrustItem = styled.View`
-  width: 23%;
+  width: 24%;
+  flex-direction: row;
   align-items: center;
+  justify-content: center;
+  padding: ${moderateVerticalScale(8)}px ${moderateScale(4)}px;
+  border-radius: ${T.radius.md}px;
+  background-color: ${T.color.surface};
+  border-width: 1px;
+  border-color: ${T.color.line};
 `;
 
 const TrustText = styled.Text`
-  color: #353535;
-  margin-top: ${moderateVerticalScale(3)}px;
-  font-size: ${scaleFont(11)}px;
-  text-align: center;
+  flex-shrink: 1;
+  margin-left: ${moderateScale(5)}px;
+  color: ${T.color.inkSoft};
+  font-size: ${scaleFont(10)}px;
   font-weight: 700;
 `;
 
@@ -1644,13 +1714,13 @@ const ActiveOrderSlide = styled.View`
   padding: 0 0px;
 `;
 
-const ActiveOrderBar = styled.TouchableOpacity`
+const ActiveOrderBar = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   margin: 0 ${moderateScale(12)}px ${moderateVerticalScale(10)}px;
   background-color: #ffffff;
-  border-radius: ${moderateScale(18)}px;
+  border-radius: ${T.radius.lg}px;
   border-width: 1px;
   border-color: #d1fae5;
-  padding: ${moderateScale(12)}px ${moderateScale(12)}px ${moderateScale(10)}px;
+  padding: ${moderateScale(10)}px ${moderateScale(12)}px ${moderateScale(8)}px;
   shadow-color: #064e3b;
   shadow-opacity: 0.18;
   shadow-radius: ${moderateScale(12)}px;
@@ -1664,9 +1734,9 @@ const ActiveOrderRow = styled.View`
 `;
 
 const ActiveOrderLogo = styled.View`
-  width: ${moderateScale(44)}px;
-  height: ${moderateScale(44)}px;
-  border-radius: ${moderateScale(12)}px;
+  width: ${moderateScale(38)}px;
+  height: ${moderateScale(38)}px;
+  border-radius: ${T.radius.md}px;
   overflow: hidden;
   background-color: #ecfdf5;
   align-items: center;
@@ -1676,8 +1746,8 @@ const ActiveOrderLogo = styled.View`
 
 const ActiveOrderStatus = styled.Text`
   color: #15803d;
-  font-size: ${scaleFont(14)}px;
-  font-weight: 900;
+  font-size: ${scaleFont(13)}px;
+  font-weight: 800;
 `;
 
 const ActiveOrderMeta = styled.Text`
@@ -1688,8 +1758,8 @@ const ActiveOrderMeta = styled.Text`
 `;
 
 const ActiveOrderProgressTrack = styled.View`
-  margin-top: ${moderateVerticalScale(10)}px;
-  height: ${moderateVerticalScale(4)}px;
+  margin-top: ${moderateVerticalScale(8)}px;
+  height: ${moderateVerticalScale(3)}px;
   border-radius: 999px;
   background-color: #dcfce7;
   overflow: hidden;
@@ -1708,6 +1778,16 @@ const ActiveOrderDotsRow = styled.View`
   justify-content: center;
   align-items: center;
   pointer-events: none;
+`;
+
+const ActiveOrderCounter = styled.Text`
+  padding: 2px 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: rgba(28, 25, 23, 0.72);
+  color: #fff;
+  font-size: ${scaleFont(11)}px;
+  font-weight: 700;
 `;
 
 const ActiveOrderDot = styled.View<{ $active: boolean }>`
@@ -1732,8 +1812,8 @@ const ActiveOrderTitle = styled.Text`
 
 const ActiveOrderTrackButton = styled.View`
   background-color: #16a34a;
-  border-radius: ${moderateScale(14)}px;
-  padding: ${moderateVerticalScale(9)}px ${moderateScale(12)}px;
+  border-radius: ${T.radius.pill}px;
+  padding: ${moderateVerticalScale(6)}px ${moderateScale(10)}px ${moderateVerticalScale(6)}px ${moderateScale(12)}px;
   flex-direction: row;
   align-items: center;
   margin-left: ${moderateScale(8)}px;
@@ -1741,7 +1821,7 @@ const ActiveOrderTrackButton = styled.View`
 
 const ActiveOrderTrackText = styled.Text`
   color: #fff;
-  font-size: ${scaleFont(14)}px;
+  font-size: ${scaleFont(13)}px;
   font-weight: 800;
   margin-right: ${moderateScale(2)}px;
 `;

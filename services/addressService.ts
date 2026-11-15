@@ -13,6 +13,10 @@ export type UserAddress = {
   id: string;
   userId: string;
   addressLine: string;
+  /** House/flat/floor text and the map-resolved location `addressLine` was built from —
+   *  null on addresses saved before the backend kept them apart. */
+  details?: string | null;
+  mapAddress?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   label?: string;
@@ -24,6 +28,8 @@ export type UserAddress = {
 interface BackendAddress {
   _id: string;
   addressLine: string;
+  details?: string | null;
+  mapAddress?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   label: string;
@@ -36,6 +42,8 @@ function mapBackendAddress(userId: string, address: BackendAddress): UserAddress
     id: address._id,
     userId,
     addressLine: address.addressLine,
+    details: address.details ?? null,
+    mapAddress: address.mapAddress ?? null,
     latitude: address.latitude,
     longitude: address.longitude,
     label: address.label,
@@ -43,6 +51,15 @@ function mapBackendAddress(userId: string, address: BackendAddress): UserAddress
     createdAt: address.createdAt,
   };
 }
+
+type AddressPayload = {
+  addressLine: string;
+  details?: string | null;
+  mapAddress?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  label?: string;
+};
 
 export const addressService = {
   async listUserAddresses(userId: string): Promise<UserAddress[]> {
@@ -53,7 +70,7 @@ export const addressService = {
 
   async addUserAddress(
     userId: string,
-    payload: { addressLine: string; latitude?: number | null; longitude?: number | null; label?: string }
+    payload: AddressPayload
   ): Promise<string> {
     if (!userId) throw new Error('User id is required');
     const address = await apiClient.post<BackendAddress>('/public/customers/me/addresses', payload);
@@ -63,7 +80,7 @@ export const addressService = {
   async updateUserAddress(
     userId: string,
     addressId: string,
-    payload: { addressLine: string; latitude?: number | null; longitude?: number | null; label?: string }
+    payload: AddressPayload
   ) {
     if (!userId) throw new Error('User id is required');
     if (!addressId) throw new Error('Address id is required');

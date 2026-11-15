@@ -1,11 +1,14 @@
+import { PRIMARY_BUTTON_STYLE, PRIMARY_BUTTON_TEXT_STYLE } from '@/components/common/AppButton';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { useEffect, useState } from 'react';
 import { Modal, ScrollView, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled from 'styled-components/native';
 import { AddonOption, ModifierGroup, Product, SelectedModifier } from '@/types/Product';
 import { buildCartItemFromProduct, getProductVariants, getSelectedProductVariant } from '@/utils/productVariants';
 import { getAddons, getModifiers } from '@/services/menuService';
 import { showAlert } from '@/services/alertService';
+import { T } from '@/constants/tokens';
 
 type Props = {
   visible: boolean;
@@ -25,6 +28,7 @@ type Props = {
  * logic for when a customer taps into the item itself rather than quick-adding it.
  */
 export default function CustomizeItemModal({ visible, product, onClose, onAdd }: Props) {
+  const insets = useSafeAreaInsets();
   const variants = product ? getProductVariants(product) : [];
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
@@ -128,7 +132,7 @@ export default function CustomizeItemModal({ visible, product, onClose, onAdd }:
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Overlay>
         <Backdrop onPress={onClose} />
-        <Sheet>
+        <Sheet style={{ paddingBottom: insets.bottom + 18 }}>
           <Handle />
           <Header>
             <Title numberOfLines={1}>{product.name}</Title>
@@ -192,7 +196,7 @@ export default function CustomizeItemModal({ visible, product, onClose, onAdd }:
 
           <Footer>
             <FooterPrice>₹{unitPrice.toFixed(2)}</FooterPrice>
-            <AddButton onPress={handleAdd} activeOpacity={0.85}>
+            <AddButton onPress={handleAdd} activeOpacity={0.8}>
               <AddButtonText>Add to Cart</AddButtonText>
             </AddButton>
           </Footer>
@@ -243,7 +247,7 @@ const Title = styled.Text`
   color: #1f2937;
 `;
 
-const CloseButton = styled.TouchableOpacity`
+const CloseButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: 28px;
   height: 28px;
   border-radius: 14px;
@@ -263,13 +267,13 @@ const SectionTitle = styled.Text`
   margin-bottom: 8px;
 `;
 
-const OptionRow = styled.TouchableOpacity<{ $active: boolean }>`
+const OptionRow = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $active: boolean }>`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
   border-width: 1px;
-  border-color: ${(props: { $active: boolean }) => (props.$active ? '#f68712' : '#e5e7eb')};
-  background-color: ${(props: { $active: boolean }) => (props.$active ? '#fff7ef' : '#fff')};
+  border-color: ${(props: { $active: boolean }) => (props.$active ? T.color.brand : T.color.line)};
+  background-color: ${(props: { $active: boolean }) => (props.$active ? T.color.brandSoft : '#fff')};
   border-radius: 12px;
   padding: 12px;
   margin-bottom: 8px;
@@ -283,14 +287,14 @@ const OptionLabel = styled.Text<{ $active: boolean }>`
 
 const OptionMeta = styled.Text<{ $active: boolean }>`
   font-size: 13px;
-  color: ${(props: { $active: boolean }) => (props.$active ? '#9a6708' : '#6b7280')};
+  color: ${(props: { $active: boolean }) => (props.$active ? '#9a6708' : T.color.muted)};
   margin-top: 4px;
 `;
 
 const OptionPrice = styled.Text<{ $active: boolean }>`
   font-size: 14px;
   font-weight: 700;
-  color: ${(props: { $active: boolean }) => (props.$active ? '#f68712' : '#374151')};
+  color: ${(props: { $active: boolean }) => (props.$active ? T.color.brand : T.color.inkSoft)};
 `;
 
 const Footer = styled.View`
@@ -309,14 +313,16 @@ const FooterPrice = styled.Text`
   font-weight: 800;
 `;
 
-const AddButton = styled.TouchableOpacity`
-  background-color: #f68712;
-  border-radius: 10px;
-  padding: 14px 28px;
+const AddButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  background-color: ${PRIMARY_BUTTON_STYLE.backgroundColor};
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  padding: 0 28px;
+  justify-content: center;
 `;
 
 const AddButtonText = styled.Text`
-  color: #fff;
-  font-size: 16px;
-  font-weight: 800;
+  color: ${PRIMARY_BUTTON_TEXT_STYLE.color};
+  font-size: ${PRIMARY_BUTTON_TEXT_STYLE.fontSize}px;
+  font-weight: ${PRIMARY_BUTTON_TEXT_STYLE.fontWeight};
 `;

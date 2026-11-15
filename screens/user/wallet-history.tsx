@@ -1,13 +1,14 @@
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { Palette } from '@/components/common/ListSection';
 import Ionicons from '@react-native-vector-icons/ionicons';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 
 import { RootState } from '../../store';
 import { userService } from '../../services/userService';
+import { usePagedList } from '@/hooks/usePagedList';
 
 type WalletEntry = {
   id: string;
@@ -47,39 +48,28 @@ const dayLabel = (date: Date | null) => {
 export default function WalletHistoryScreen() {
   const insets = useSafeAreaInsets();
   const user = useSelector((state: RootState) => state.auth.user);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const [entries, setEntries] = useState<WalletEntry[]>([]);
   const [filter, setFilter] = useState<Filter>('all');
+  const [serverTotals, setServerTotals] = useState<{ credit: number; debit: number } | null>(null);
 
-  const load = useCallback(async () => {
-    if (!user?.uid) {
-      setEntries([]);
-      return;
-    }
-    try {
-      const rows = await userService.listWalletTransactions();
-      setEntries(rows.map((row) => ({ ...row, id: row._id, isCoins: row.metadata?.unit === 'coins' })));
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    }
-  }, [user?.uid]);
+  // Pages of the ledger from the API; Credits/Debits re-query from page 1.
+  const list = usePagedList<WalletEntry>(
+    async (page) => {
+      const result = await userService.pageWalletTransactions(page, filter === 'all' ? undefined : filter);
+      if (page === 1) setServerTotals(result.totals);
+      return { items: result.items.map((row) => ({ ...row, id: row._id, isCoins: row.metadata?.unit === 'coins' })), hasMore: result.hasMore };
+    },
+    (entry) => entry.id,
+    [filter, user?.uid],
+    { enabled: Boolean(user?.uid) }
+  );
+  const entries = list.items;
+  const failed = Boolean(list.error);
 
-  useEffect(() => {
-    setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  };
-
+  // The server's totals cover the whole ledger; an older backend sends none, and then every
+  // row is already loaded, so adding them up here gives the same answer.
   const totals = useMemo(
     () =>
+      serverTotals ??
       entries.reduce(
         (acc, entry) => {
           if (entry.isCoins) return acc;
@@ -89,7 +79,7 @@ export default function WalletHistoryScreen() {
         },
         { credit: 0, debit: 0 }
       ),
-    [entries]
+    [serverTotals, entries]
   );
 
   const sections = useMemo(() => {
@@ -167,7 +157,7 @@ export default function WalletHistoryScreen() {
   return (
     <PageScreen style={styles.page}>
       <PageHeader title="Wallet History" />
-      {loading ? (
+      {list.loading && entries.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={Palette.primary} />
         </View>
@@ -177,7 +167,10 @@ export default function WalletHistoryScreen() {
           keyExtractor={(item) => item.id}
           ListHeaderComponent={header}
           stickySectionHeadersEnabled={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={Palette.primary} colors={[Palette.primary]} />}
+          onEndReached={() => void list.loadMore()}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ paddingVertical: 16 }} color={Palette.primary} /> : null}
+          refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor={Palette.primary} colors={[Palette.primary]} />}
           contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32 }}
           showsVerticalScrollIndicator={false}
           renderSectionHeader={({ section }) => <Text style={styles.dayLabel}>{section.title}</Text>}
@@ -222,7 +215,7 @@ export default function WalletHistoryScreen() {
   );
 }
 
-const card = { backgroundColor: '#fff', borderWidth: StyleSheet.hairlineWidth, borderColor: '#e6e6ea' } as const;
+const card = { backgroundColor: '#fff', borderWidth: StyleSheet.hairlineWidth, borderColor: Palette.hairline } as const;
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: Palette.page },
@@ -244,7 +237,7 @@ const styles = StyleSheet.create({
   listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 24, marginBottom: 4 },
   listTitle: { fontSize: 17, fontWeight: '800', color: Palette.text },
   filters: { flexDirection: 'row', gap: 6 },
-  filterChip: { paddingHorizontal: 11, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#e2e3e8', backgroundColor: '#fff' },
+  filterChip: { paddingHorizontal: 11, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: Palette.hairline, backgroundColor: '#fff' },
   filterChipActive: { borderColor: Palette.primary, backgroundColor: Palette.primarySoft },
   filterText: { fontSize: 12, fontWeight: '600', color: Palette.textSecondary },
   filterTextActive: { color: Palette.primary, fontWeight: '800' },
@@ -258,7 +251,7 @@ const styles = StyleSheet.create({
   txnMeta: { fontSize: 12, color: Palette.textMuted, marginTop: 3 },
   txnAmount: { fontSize: 15, fontWeight: '800' },
   empty: { alignItems: 'center', paddingVertical: 40, paddingHorizontal: 24 },
-  emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: '#e6e6ea' },
+  emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: Palette.hairline },
   emptyTitle: { fontSize: 15, fontWeight: '700', color: Palette.text, marginTop: 12 },
   emptyBody: { fontSize: 13, color: Palette.textSecondary, textAlign: 'center', marginTop: 4, lineHeight: 19 },
 });

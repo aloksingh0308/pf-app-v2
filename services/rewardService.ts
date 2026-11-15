@@ -146,6 +146,8 @@ function toGeneratedReward(reward: BackendReward): GeneratedReward {
   };
 }
 
+export type RewardSummary = { toScratch: number; activeCoupons: number; coins: number };
+
 function toUserRewardItem(reward: BackendReward): UserRewardItem {
   return {
     orderId: reward.orderId,
@@ -202,6 +204,15 @@ export const rewardService = {
 
   /** Every scratch card the logged-in customer has, newest first. `userId` is ignored (see
    *  generateReward). */
+  /** One page of rewards for the Rewards page's infinite scroll, with counts across all of
+   *  them. A backend that doesn't page this yet returns every reward as one page and no
+   *  summary (the screen counts them itself). */
+  async pageUserRewards(page: number, filter?: 'TO_SCRATCH' | 'ACTIVE' | 'PAST') {
+    const result = await apiClient.getPage<BackendReward>(`/public/customers/me/rewards${filter ? `?filter=${filter}` : ''}`, page, 20);
+    const summary = (result.meta as (typeof result.meta & { summary?: RewardSummary }) | null)?.summary ?? null;
+    return { items: result.items.map(toUserRewardItem), hasMore: result.hasMore, summary };
+  },
+
   async listUserRewards(userId: string): Promise<UserRewardItem[]> {
     if (!String(userId || '').trim()) return [];
     const rewards = await apiClient.get<BackendReward[]>('/public/customers/me/rewards');

@@ -2,7 +2,7 @@ import React from 'react';
 import { TouchableOpacity } from 'react-native';
 import styled from 'styled-components/native';
 
-const Banner = styled(TouchableOpacity)`
+const Banner = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   background: #fff3e0;
   border-radius: 12px;
   margin: 10px 12px 0 12px;
@@ -20,7 +20,7 @@ const BannerText = styled.Text`
 
 export default function OfferBanner({ onPress }: { onPress: () => void }) {
   return (
-    <Banner activeOpacity={0.85} onPress={onPress}>
+    <Banner activeOpacity={0.8} onPress={onPress}>
       <BannerText>🎉 Get ₹50 OFF on first order</BannerText>
       <BannerText style={{ fontSize: 18 }}>→</BannerText>
     </Banner>

@@ -6,6 +6,7 @@ import React, { useMemo } from 'react';
 import { useSelector } from 'react-redux';
 import styled from 'styled-components/native';
 import { calculateCartTotals } from '@/utils/dealCart';
+import { T } from '@/constants/tokens';
 
 type FloatingCartButtonProps = {
   bottomOffset?: number;
@@ -49,7 +50,7 @@ export default function FloatingCartButton({ bottomOffset = 0 }: FloatingCartBut
       </CartLeft>
       <ViewCartButton activeOpacity={0.8} onPress={() => { appLoader.show(); router.push({ pathname: '/user/cart' }); }}>
         <ViewCartText>View Cart</ViewCartText>
-        <Ionicons name="arrow-forward" size={20} color="#f68712" style={{ marginLeft: 4 }} />
+        <Ionicons name="arrow-forward" size={20} color={T.color.brand} style={{ marginLeft: 4 }} />
       </ViewCartButton>
     </CartBarContainer>
   );
@@ -140,7 +141,7 @@ const CartSavingsValue = styled.Text`
   color: #b6ffb6;
   font-weight: bold;
 `;
-const ViewCartButton = styled.TouchableOpacity`
+const ViewCartButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background: #fff;
   border-radius: 16px;
   padding: 7px 10px;

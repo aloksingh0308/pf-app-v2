@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "PrayagiFoodwala",
+    "name": "Prayagi Foodwala",
     "slug": "praygagifoodwala",
-    "version": "4.0.0",
+    "version": "4.0.2",
     "icon": "./assets/images/icon.png",
     "scheme": "PrayagiFoodwala",
     "userInterfaceStyle": "automatic",
@@ -98,10 +98,10 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 130,
+          "image": "./assets/images/splash-logo.png",
+          "imageWidth": 180,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#fffbf7"
         }
       ],
       "expo-font",

@@ -4,10 +4,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator } from 'react-native';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../../services/alertService';
-import { getMyOrders } from '@/services/orderService';
+import { getMyOrder } from '@/services/orderService';
 import { orderStatusLabel } from '@/utils/orderStatus';
 import { usePolling } from '@/utils/polling';
 import { isRateLimited } from '@/utils/apiClient';
+import { T } from '@/constants/tokens';
+import { gstRows } from '@/utils/gst';
 
 const ORDER_POLL_MS = 20_000;
 
@@ -25,16 +27,14 @@ const OrderDetails = () => {
     }
   }, [id]);
 
-  // Replaces the Firestore onSnapshot live listener with polling against the customer
-  // account's own "my orders" endpoint (already aggregated across every restaurant it's
-  // ordered from — see orderService.getMyOrders), filtered down to this one order. Runs
+  // Replaces the Firestore onSnapshot live listener with polling this one order from the
+  // customer account's own orders (see orderService.getMyOrder). Runs
   // only while this screen is visible (utils/polling.ts). Only the FIRST load's failure
   // is worth an alert — a background refresh failing just keeps the last known order.
   usePolling(
     async () => {
       try {
-        const orders = await getMyOrders();
-        setOrder(orders.find((o) => o.id === id) || null);
+        setOrder(await getMyOrder(String(id)));
         loadedOnceRef.current = true;
       } catch (err) {
         if (!loadedOnceRef.current && !isRateLimited(err)) {
@@ -52,7 +52,7 @@ const OrderDetails = () => {
   if (loading) {
     return (
       <Container><PageHeader title="Order Details" /><Center>
-        <ActivityIndicator size="large" color="#f68712" />
+        <ActivityIndicator size="large" color={T.color.brand} />
       </Center></Container>
     );
   }
@@ -94,7 +94,7 @@ const OrderDetails = () => {
         {order.pricing && (
           <Pricing>
             <PricingRow>
-              <PricingLabel>Subtotal</PricingLabel>
+              <PricingLabel>{order.pricing.taxIncluded ? 'Subtotal (incl. GST)' : 'Subtotal'}</PricingLabel>
               <PricingValue>₹{order.pricing.subtotal.toFixed(2)}</PricingValue>
             </PricingRow>
             <PricingRow>
@@ -105,6 +105,12 @@ const OrderDetails = () => {
               <PricingLabel>Packaging & Other Charges</PricingLabel>
               <PricingValue>₹{Number(order.pricing.packagingCharge || 0).toFixed(2)}</PricingValue>
             </PricingRow>
+            {gstRows(Number(order.pricing.tax || 0), order.pricing.taxable ?? Number(order.pricing.subtotal || 0) - Number(order.pricing.discount || 0)).map(([label, value]) => (
+              <PricingRow key={label}>
+                <PricingLabel>{order.pricing.taxIncluded ? `${label} (included)` : label}</PricingLabel>
+                <PricingValue>₹{value.toFixed(2)}</PricingValue>
+              </PricingRow>
+            ))}
             <PricingRow>
               <PricingLabel>Delivery Fee</PricingLabel>
               <PricingValue>₹{Number(order.pricing.deliveryFee || 0).toFixed(2)}</PricingValue>
@@ -211,7 +217,7 @@ const PricingLabel = styled.Text`
 `;
 
 const PricingValue = styled.Text`
-  color: ${(props: any) => props.highlight ? '#f68712' : '#333'};
+  color: ${(props: any) => props.highlight ? T.color.brand : T.color.ink};
   font-weight: ${(props: any) => props.highlight ? '700' : '600'};
 `;
 

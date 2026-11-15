@@ -11,14 +11,14 @@ const CategoryTile: React.FC<Props> = ({ category, onPress, selectedCategory }) 
     return (
         <TileContainer style={{
             backgroundColor: selectedCategory === category.id ? "#F68712" : "#F3F4F6"
-        }} onPress={onPress} activeOpacity={0.7}>
+        }} onPress={onPress} activeOpacity={0.8}>
             <TileText style={{ color: selectedCategory === category.id ? "#FFF" : "#282939" }}>{category.name}</TileText>
         </TileContainer>
     );
 }
 export default CategoryTile;
 
-const TileContainer = styled.TouchableOpacity`
+const TileContainer = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background-color: #F3F4F6;
   margin-right: 16px;
   border-radius: 20px;

@@ -2,7 +2,8 @@ import { dobToIso, isoToDob } from '@/utils/dateOfBirth';
 import DateOfBirthPicker from '@/components/DateOfBirthPicker';
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppButton from '@/components/common/AppButton';
-import { AppColors } from '@/constants/appColors';
+import { T } from '@/constants/tokens';
+import Ionicons from '@react-native-vector-icons/ionicons';
 import { AppContent } from '@/constants/appContent';
 import { useAppLoader } from '@/hooks/useAppLoader';
 import * as ImagePicker from 'expo-image-picker';
@@ -157,18 +158,25 @@ export default function EditProfileScreen() {
 
       <Content>
         <ProfileImageContainer>
-          <ProfileImage source={{ uri: profileImage || DEFAULT_PROFILE_IMAGE }} />
-          <ImagePickerButton onPress={pickProfileImage}>
+          <AvatarButton onPress={pickProfileImage} disabled={saving} accessibilityRole="button" accessibilityLabel="Change profile photo">
+            <ProfileImage source={{ uri: profileImage || DEFAULT_PROFILE_IMAGE }} />
+            <CameraBadge>
+              <Ionicons name="camera" size={16} color={T.color.surface} />
+            </CameraBadge>
+          </AvatarButton>
+          <ImagePickerButton onPress={pickProfileImage} disabled={saving}>
             <ImagePickerText>Change Photo</ImagePickerText>
           </ImagePickerButton>
         </ProfileImageContainer>
+
+        <FormCard>
 
         <Label>Full Name</Label>
         <Input
           value={name}
           onChangeText={setName}
           placeholder="Enter full name"
-          placeholderTextColor="#999"
+          placeholderTextColor={T.color.faint}
           editable={!saving}
         />
 
@@ -176,17 +184,18 @@ export default function EditProfileScreen() {
         {/* Phone is this account's own login identity (verified by OTP), so it isn't
             editable here — matches customerAuth.service.ts's updateMe, which deliberately
             has no phone field at all. */}
-        <Input value={phoneNumber} editable={false} placeholderTextColor="#999" />
+        <Input value={phoneNumber} editable={false} placeholderTextColor={T.color.faint} style={{ color: T.color.muted }} />
 
         <Label>Date of Birth</Label>
         <DateOfBirthPicker value={dateOfBirth} onChange={setDateOfBirth} placeholder="Select date of birth" disabled={saving} />
+        </FormCard>
 
         <AppButton
           title="Save Changes"
           onPress={handleSave}
           disabled={saving}
           loading={saving}
-          style={{ minHeight: 50, marginTop: 8, marginBottom: 24 }}
+          style={{ marginTop: 20, marginBottom: 24 }}
         />
 
         {saving && saveStatusText ? <StatusText>{saveStatusText}</StatusText> : null}
@@ -197,69 +206,90 @@ export default function EditProfileScreen() {
 
 const Container = styled(PageScreen)`
   flex: 1;
-  background-color: ${AppColors.background};
+  background-color: ${T.color.canvas};
 `;
-
-
-
-
 
 const Content = styled.ScrollView`
   flex: 1;
-  padding: 20px;
+  padding: 20px 16px;
 `;
 
 const ProfileImageContainer = styled.View`
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 `;
+
+const AvatarButton = styled.Pressable``;
 
 const ProfileImage = styled.Image`
-  width: 120px;
-  height: 120px;
-  border-radius: 60px;
-  border-width: 2px;
-  border-color: ${AppColors.primary};
+  width: 112px;
+  height: 112px;
+  border-radius: 56px;
+  border-width: 3px;
+  border-color: ${T.color.surface};
+  background-color: ${T.color.line};
 `;
 
-const ImagePickerButton = styled.TouchableOpacity`
+const CameraBadge = styled.View`
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.brand};
+  border-width: 2px;
+  border-color: ${T.color.surface};
+`;
+
+const ImagePickerButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   margin-top: 12px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background-color: #fff3e0;
+  padding: 8px 16px;
+  border-radius: ${T.radius.pill}px;
+  background-color: ${T.color.brandSoft};
   border-width: 1px;
-  border-color: #ffe0b2;
+  border-color: ${T.color.brandBorder};
 `;
 
 const ImagePickerText = styled.Text`
-  color: ${AppColors.primary};
-  font-size: 14px;
-  font-weight: 600;
+  color: ${T.color.brand};
+  font-size: 13px;
+  font-weight: 700;
+`;
+
+const FormCard = styled.View`
+  padding: 16px 16px 0px;
+  border-radius: ${T.radius.lg}px;
+  background-color: ${T.color.surface};
+  border-width: 0.5px;
+  border-color: ${T.color.line};
 `;
 
 const Label = styled.Text`
-  color: ${AppColors.textDark};
-  font-size: 14px;
+  color: ${T.color.inkSoft};
+  font-size: 13px;
   font-weight: 600;
   margin-bottom: 8px;
 `;
 
 const Input = styled.TextInput`
   border-width: 1px;
-  border-color: ${AppColors.inputBorder};
-  border-radius: 8px;
+  border-color: ${T.color.line};
+  border-radius: ${T.radius.md}px;
   padding: 14px;
   margin-bottom: 16px;
   font-size: 16px;
-  color: ${AppColors.textPrimary};
-  background-color: ${AppColors.lightBackground};
+  color: ${T.color.ink};
+  background-color: ${T.color.canvas};
 `;
 
 const StatusText = styled.Text`
   margin-top: -12px;
   margin-bottom: 18px;
   text-align: center;
-  color: ${AppColors.textSecondary};
+  color: ${T.color.muted};
   font-size: 13px;
 `;
 
@@ -270,6 +300,6 @@ const Center = styled.View`
 `;
 
 const InfoText = styled.Text`
-  color: ${AppColors.textSecondary};
+  color: ${T.color.muted};
   font-size: 14px;
 `;

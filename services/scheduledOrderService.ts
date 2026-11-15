@@ -299,7 +299,7 @@ export const placeScheduledOrder = async (params: PlaceScheduledOrderParams): Pr
   }
 
   const isHomeDeliveryOrder = String(params.orderType || '') === 'HOME_DELIVERY' || String(params.orderType) === '3';
-  const order = await apiClient.post<{ _id: string }>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/scheduled-orders`, {
+  const order = await apiClient.postIdempotent<{ _id: string }>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/scheduled-orders`, {
     items: params.items.map((item) => ({ menuItemId: item.firebaseId || item.id, quantity: Number(item.quantity || 0) })),
     customerName: params.customerName,
     customerPhone: params.mobileNumber,

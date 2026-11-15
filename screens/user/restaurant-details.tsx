@@ -1,4 +1,6 @@
 import PageHeader from '@/components/common/PageHeader';
+import AppearIn from '@/components/common/AppearIn';
+import { T } from '@/constants/tokens';
 import AppImage from '@/components/AppImage';
 import CustomizeItemModal from '@/components/CustomizeItemModal';
 import ProductCard from '@/components/ProductCard';
@@ -12,14 +14,14 @@ import Ionicons from '@react-native-vector-icons/ionicons';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { FlatList, ScrollView, SectionList, TextInput, View, Text, Pressable, StyleSheet, Share, Modal, ActivityIndicator } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { calculateCartTotals, getDealBundleQuantity } from '@/utils/dealCart';
 import { formatDistance, formatEta, getRestaurantOpeningStatus } from '@/services/restaurantService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import { showAlert } from '../../services/alertService';
-import { getCategories, getMenuItems } from '../../services/menuService';
+import { getCategories, getMenuItemsPage, MenuPageQuery } from '../../services/menuService';
 import { setActiveRestaurant, setPendingOffer } from '../../services/restaurantContext';
+import { useFavorite } from '../../services/favoritesService';
 import { buildCartItemsForDeal, buildDealDescription, fetchActiveDeals, hydrateDealItemNames } from '../../services/dealsService';
 import { BranchOfferRecord, formatBranchOfferHeadline, getBranchOffers } from '../../services/offersService';
 import { DealMenuView } from '@/types/Deal';
@@ -52,12 +54,6 @@ const FOOD_FILTERS: Array<{ id: FoodFilter; label: string; mark?: FoodType }> = 
   { id: 'EGG', label: 'Egg', mark: 'EGG' },
   { id: 'NON_VEG', label: 'Non-Veg', mark: 'NON_VEG' },
 ];
-const matchesFoodFilter = (foodType: FoodType | undefined, filter: FoodFilter) => {
-  if (filter === 'ALL') return true;
-  const type = foodType || 'VEG';
-  if (filter === 'VEG') return type === 'VEG' || type === 'VEGAN';
-  return type === filter;
-};
 
 type PriceSort = 'NONE' | 'LOW_TO_HIGH' | 'HIGH_TO_LOW';
 const PRICE_SORTS: Array<{ id: PriceSort; label: string }> = [
@@ -157,11 +153,10 @@ export default function RestaurantDetailsScreen() {
   const cancelFilters = () => { setDraftFilters(filters); setFiltersVisible(false); };
   const applyDraftFilters = () => { setFilters(draftFilters); setFiltersVisible(false); };
   const activeFilterCount = countActiveFilters(filters);
-  const [saved, setSaved] = useState(false);
   const listRef = useRef<SectionList<ProductWithFirebaseId, MenuSection>>(null);
   const comboOffset = useRef(0);
-  const favouriteKey = `restaurant_favourite_${parsedRestaurant?.id || ''}`;
-  useEffect(() => { AsyncStorage.getItem(favouriteKey).then(value => setSaved(value === '1')).catch(() => {}); }, [favouriteKey]);
+  // Saved on the customer's account (services/favoritesService.ts), keyed by the branch id.
+  const { isFavorite: saved, toggle: toggleSaved } = useFavorite('RESTAURANT', parsedRestaurant?.id);
   const [selectedCategory, setSelectedCategory] = useState(normalizedCategoryId || '0');
   const [menuItemCategories, setMenuItemCategories] = useState<Category[]>([]);
   const [loadingHome, setLoadingHome] = useState(true);
@@ -170,49 +165,83 @@ export default function RestaurantDetailsScreen() {
   const isWithinServiceArea = true;
   const [customizeProduct, setCustomizeProduct] = useState<ProductWithFirebaseId | null>(null);
   const appLoader = useAppLoader();
+  // Infinite-scroll menu: pages of server-filtered dishes (services/menuService.ts getMenuItemsPage).
+  const [restaurantReady, setRestaurantReady] = useState(false);
+  const [menuCursor, setMenuCursor] = useState<string | null>(null);
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({});
+  const [menuFoodTypes, setMenuFoodTypes] = useState<FoodType[]>([]);
+  const [menuReady, setMenuReady] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const menuRequestRef = useRef(0);
+  const loadingMoreRef = useRef(false);
 
   const handleOpenCustomizeModal = useCallback((product: Product) => {
     setCustomizeProduct(product as ProductWithFirebaseId);
   }, []);
 
 
-  const applyFilters = (
-    items: ProductWithFirebaseId[],
-    categoryId: string,
-    queryText: string,
-    categoriesOverride?: Category[]
-  ) => {
-    const availableCategoryIds = new Set((categoriesOverride || menuItemCategories).map((category) => category.id));
-    const normalizedQuery = String(queryText || '').trim().toLowerCase();
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
-    return items.filter((item) => {
-      const matchesCategory = categoryId === '0'
-        ? (!item.categoryId || availableCategoryIds.has(item.categoryId))
-        : item.categoryId === categoryId;
+  // Category, search, food type and price sort are applied by the API; changing any of them
+  // starts again from the first page.
+  const menuQuery = useMemo<MenuPageQuery>(() => ({
+    categoryId: selectedCategory !== '0' ? selectedCategory : undefined,
+    q: debouncedSearch || undefined,
+    foodType: foodFilter === 'ALL' ? undefined : foodFilter,
+    sort: priceSort === 'LOW_TO_HIGH' ? 'PRICE_ASC' : priceSort === 'HIGH_TO_LOW' ? 'PRICE_DESC' : undefined,
+  }), [selectedCategory, debouncedSearch, foodFilter, priceSort]);
 
-      if (!matchesCategory) {
-        return false;
-      }
+  useEffect(() => {
+    if (!restaurantReady) return;
+    // A newer query (or restaurant) bumps the id, so a slow older response is dropped.
+    const requestId = ++menuRequestRef.current;
+    setMenuReady(false);
+    getMenuItemsPage(menuQuery)
+      .then((page) => {
+        if (requestId !== menuRequestRef.current) return;
+        setMenuItems(page.items);
+        setMenuCursor(page.nextCursor);
+        setMenuCounts(page.categoryCounts);
+        setMenuFoodTypes(page.foodTypes);
+      })
+      .catch((error) => {
+        if (requestId !== menuRequestRef.current) return;
+        console.warn('Failed to load menu.', error);
+        setMenuItems([]);
+        setMenuCursor(null);
+      })
+      .finally(() => { if (requestId === menuRequestRef.current) setMenuReady(true); });
+  }, [restaurantReady, menuQuery, parsedRestaurant?.id]);
 
-      if (!normalizedQuery) {
-        return true;
-      }
+  const loadMoreMenu = useCallback(async () => {
+    if (!menuReady || !menuCursor || loadingMoreRef.current) return;
+    const requestId = menuRequestRef.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const page = await getMenuItemsPage(menuQuery, menuCursor);
+      if (requestId !== menuRequestRef.current) return;
+      setMenuItems((current) => {
+        const seen = new Set(current.map((item) => item.firebaseId));
+        return [...current, ...page.items.filter((item) => !seen.has(item.firebaseId))];
+      });
+      setMenuCursor(page.nextCursor);
+    } catch (error) {
+      console.warn('Failed to load more menu items.', error);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [menuReady, menuCursor, menuQuery]);
 
-      const searchText = `${String(item.name || '')} ${String((item as any)?.description || '')}`.toLowerCase();
-      return searchText.includes(normalizedQuery);
-    });
-  };
-
+  // The server already left out sold-out dishes; this only matters if one sells out mid-scroll.
   const filteredItems = useMemo(
-    () => {
-      const items = applyFilters(menuItems, selectedCategory, searchQuery)
-        .filter(item => !inStockOnly || item.inStock !== false)
-        .filter(item => matchesFoodFilter(item.foodType, foodFilter));
-      if (priceSort === 'LOW_TO_HIGH') return [...items].sort((a, b) => a.price - b.price);
-      if (priceSort === 'HIGH_TO_LOW') return [...items].sort((a, b) => b.price - a.price);
-      return items;
-    },
-    [menuItems, selectedCategory, searchQuery, menuItemCategories, inStockOnly, priceSort, foodFilter]
+    () => menuItems.filter(item => !inStockOnly || item.inStock !== false),
+    [menuItems, inStockOnly]
   );
 
   // Category-wise listing: one section per menu category in the restaurant's own display
@@ -234,11 +263,33 @@ export default function RestaurantDetailsScreen() {
     return sections;
   }, [filteredItems, menuItemCategories]);
 
+  // Accordion: only the first category starts open; tapping a header opens / folds it.
+  // A search, or a single category (chip filter), always shows everything.
+  // Only headers the customer actually tapped are remembered; everything else follows the
+  // default (first category open). Items can load before the category list, so the "first"
+  // section isn't known up front — computing it live keeps the right one open.
+  const [sectionOverrides, setSectionOverrides] = useState<Record<string, boolean>>({});
+  const firstSectionId = menuSections[0]?.id;
+  const isSearching = debouncedSearch.trim().length > 0;
+  const showAllSections = isSearching || menuSections.length <= 1;
+  const isSectionOpen = useCallback(
+    (id: string) => showAllSections || (sectionOverrides[id] ?? id === firstSectionId),
+    [showAllSections, sectionOverrides, firstSectionId]
+  );
+  const toggleSection = useCallback((id: string) => {
+    setSectionOverrides(prev => ({ ...prev, [id]: !(prev[id] ?? id === firstSectionId) }));
+  }, [firstSectionId]);
+  const sectionSizes = useMemo(() => Object.fromEntries(menuSections.map(section => [section.id, section.data.length])), [menuSections]);
+  const visibleSections = useMemo(
+    () => menuSections.map(section => (isSectionOpen(section.id) ? section : { ...section, data: [] })),
+    [menuSections, isSectionOpen]
+  );
+
   // All / Veg / Non-Veg are always offered; Egg only when this menu actually has egg dishes.
   const availableFoodFilters = useMemo(() => {
-    const hasEgg = menuItems.some(item => item.foodType === 'EGG');
+    const hasEgg = menuFoodTypes.includes('EGG');
     return FOOD_FILTERS.filter(filter => filter.id !== 'EGG' || hasEgg);
-  }, [menuItems]);
+  }, [menuFoodTypes]);
 
 
   useEffect(() => {
@@ -250,6 +301,7 @@ export default function RestaurantDetailsScreen() {
         // app is a cross-organization marketplace now, so it's resolved per-screen from
         // the restaurant that was actually tapped, not a build-wide fixed org/branch.
         setActiveRestaurant(parsedRestaurant);
+        setRestaurantReady(true);
 
         // Real per-branch combos (Admin's Combos page) — own try/catch so a combos
         // failure never blocks the rest of this screen's menu from loading.
@@ -283,31 +335,6 @@ export default function RestaurantDetailsScreen() {
         setMenuItemCategories(availableCategories);
 
 
-        const items = await getMenuItems();
-        const filteredByCafe = items.filter((item) => {
-          if (!parsedRestaurant) return true;
-          const selectedKeys = getRestaurantKeys(parsedRestaurant);
-          const key = normalizeKey((item as any)?.cafeId || (item as any)?.restaurantId || (item as any)?.restaurantID || (item as any)?.restaurant);
-          if (!key) return true;
-          return selectedKeys.has(key);
-        }).map((item) => {
-          if (parsedRestaurant?.id) {
-            const fallbackId = String(parsedRestaurant.id).trim();
-            return {
-              ...item,
-              cafeId: (item as any)?.cafeId || (item as any)?.restaurantId || fallbackId,
-              restaurantId: (item as any)?.restaurantId || (item as any)?.cafeId || fallbackId,
-            } as ProductWithFirebaseId;
-          }
-          return item;
-        });
-
-        // Per-item ratings aren't migrated to the new backend yet (see menuService.ts) —
-        // every item comes back with rating 0 rather than an enriched per-restaurant
-        // review lookup the way the old Firestore `productReviews` query did.
-        setMenuItems(filteredByCafe);
-
-        void applyFilters(filteredByCafe, '0', '', availableCategories);
       } catch (error) {
         console.error(error);
       } finally {
@@ -320,12 +347,21 @@ export default function RestaurantDetailsScreen() {
   }, [parsedRestaurant?.id]);
 
 
-  const onProductPress = (product: ProductWithFirebaseId) => {
+  const onProductPress = useCallback((product: Product) => {
     router.push({
       pathname: '/user/product-details',
       params: { product: JSON.stringify(product) },
     });
-  };
+  }, [router]);
+  const onAddUnavailablePress = useCallback((product: Product) => {
+    showAlert('Unavailable', product.inStock === false ? 'This item is currently out of stock.' : SERVICE_UNAVAILABLE_MESSAGE);
+  }, []);
+  // Stable so the memoized ProductCards skip re-rendering when only the cart changes.
+  const renderMenuItem = useCallback(({ item, index }: { item: ProductWithFirebaseId; index: number }) => (
+    <AppearIn index={index}>
+      <ProductCard layout="list" product={item} onPress={onProductPress} onCustomize={handleOpenCustomizeModal} canAddToCart={isWithinServiceArea && item.inStock !== false} onAddUnavailablePress={onAddUnavailablePress} restaurantName={parsedRestaurant?.name} />
+    </AppearIn>
+  ), [onProductPress, handleOpenCustomizeModal, isWithinServiceArea, onAddUnavailablePress, parsedRestaurant?.name]);
 
   const handleAddComboToCart = useCallback(async (deal: DealMenuView) => {
     if (!isWithinServiceArea) {
@@ -384,11 +420,11 @@ export default function RestaurantDetailsScreen() {
     if (/sweet|dessert/.test(value)) return 'ice-cream-outline';
     return 'restaurant-outline';
   };
-  const renderCombo = ({ item: deal }: { item: DealMenuView }) => {
+  const renderCombo = ({ item: deal, index }: { item: DealMenuView; index: number }) => {
     const state = getComboCartState(deal);
     const price = Number(deal.pricing.dealPrice || 0);
     const original = Number(deal.pricing.totalPrice || 0);
-    return <View style={styles.comboCard} collapsable={false}>
+    return <AppearIn index={index} from="left"><View style={styles.comboCard} collapsable={false}>
       <AppImage uri={deal.image || cover} style={styles.comboImage} />
       <View style={{ padding: 10 }}>
         <Text numberOfLines={1} style={styles.comboName}>{deal.name}</Text>
@@ -398,15 +434,12 @@ export default function RestaurantDetailsScreen() {
           {state.quantity ? <View style={styles.stepper}><Pressable accessibilityLabel={`Remove one ${deal.name}`} onPress={() => handleComboDecrement(deal)} style={styles.step}><Ionicons name="remove" size={18} color="#ff7500" /></Pressable><Text style={styles.stepValue}>{state.quantity}</Text><Pressable accessibilityLabel={`Add one ${deal.name}`} onPress={() => void handleComboIncrement(deal)} style={styles.step}><Ionicons name="add" size={18} color="#ff7500" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Add ${deal.name}`} onPress={() => void handleComboIncrement(deal)} style={styles.comboAdd}><Ionicons name="add" size={25} color="#fff" /></Pressable>}
         </View>
       </View>
-    </View>;
+    </View></AppearIn>;
   };
 
   return <View style={styles.page}>
     <PageHeader title={parsedRestaurant?.name || 'Restaurant'} actions={[
-      { icon: saved ? 'heart' : 'heart-outline', label: saved ? 'Unsave restaurant' : 'Save restaurant', onPress: async () => {
-        try { await AsyncStorage.setItem(favouriteKey, saved ? '0' : '1'); setSaved(!saved); }
-        catch { showAlert('Unable to save', 'Please try again.'); }
-      } },
+      { icon: saved ? 'heart' : 'heart-outline', label: saved ? 'Unsave restaurant' : 'Save restaurant', onPress: () => void toggleSaved() },
       { icon: 'share-social-outline', label: 'Share restaurant', onPress: () => {
         // Universal link: opens this restaurant in the app (or the login page if signed out),
         // and the website's restaurant page when the app isn't installed.
@@ -420,10 +453,24 @@ export default function RestaurantDetailsScreen() {
     <RestaurantPausedBanner restaurantName={parsedRestaurant?.name} />
     <SectionList
       ref={listRef}
-      sections={menuSections}
+      sections={visibleSections}
       stickySectionHeadersEnabled={false}
       keyExtractor={item => getProductCartKey(item)}
-      renderSectionHeader={({ section }) => <View style={styles.menuSectionHeader}><Text style={styles.menuSectionTitle}>{section.title}</Text><Text style={styles.menuSectionCount}>{section.data.length} {section.data.length === 1 ? 'item' : 'items'}</Text></View>}
+      renderSectionHeader={({ section }) => {
+        const count = menuCounts[section.id] ?? sectionSizes[section.id] ?? section.data.length;
+        const open = isSectionOpen(section.id);
+        return (
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={`${section.title}, ${count} ${count === 1 ? 'item' : 'items'}. ${open ? 'Collapse' : 'Expand'}`}
+            disabled={showAllSections} onPress={() => toggleSection(section.id)}
+            style={({ pressed }) => [styles.menuSectionHeader, pressed && { opacity: 0.8 }]}>
+            <Text style={styles.menuSectionTitle}>{section.title}</Text>
+            <View style={styles.row}>
+              <Text style={styles.menuSectionCount}>{count} {count === 1 ? 'item' : 'items'}</Text>
+              <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color="#6b7280" style={{ marginLeft: 6 }} />
+            </View>
+          </Pressable>
+        );
+      }}
       removeClippedSubviews={false}
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={{ paddingBottom: totals.displayCount ? insets.bottom + 110 : insets.bottom + 24 }}
@@ -442,15 +489,22 @@ export default function RestaurantDetailsScreen() {
         </View>
         <View style={styles.sheet}>
           {combos.length > 0 && <Pressable accessibilityRole="button" accessibilityLabel="View special combos" onPress={scrollToCombos} style={styles.banner}>
-            <View style={{ width: '58%', zIndex: 1 }}><Text style={styles.bannerKicker}>TODAY’S</Text><Text style={styles.bannerTitle}>SPECIAL COMBOS</Text><Text style={styles.bannerCopy}>Great taste. Better together!</Text><View style={styles.bannerCta}><Text style={styles.whiteBold}>View Combos</Text><Ionicons name="arrow-forward" size={18} color="#fff" /></View></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bannerKicker}>TODAY’S SPECIAL</Text>
+              <Text style={styles.bannerTitle}>Combo deals</Text>
+              {/* Saving + CTA share one row to keep the banner short. */}
+              <View style={styles.bannerActions}>
+                {maxSaving > 0 && <View style={styles.bannerSaving}><Ionicons name="pricetag" size={11} color={T.color.success} /><Text style={styles.bannerSavingText}>Save up to ₹{maxSaving.toFixed(0)}</Text></View>}
+                <View style={styles.bannerCta}><Text style={styles.bannerCtaText}>View</Text><Ionicons name="arrow-forward" size={13} color="#fff" /></View>
+              </View>
+            </View>
             <View style={styles.bannerPhoto}><AppImage uri={combos[0].image || cover} style={{ width: '100%', height: '100%' }} /></View>
-            {maxSaving > 0 && <View style={styles.bannerSaving}><Text style={{ color: '#fff', fontSize: 9, fontWeight: '700' }}>SAVE UP TO</Text><Text style={{ color: '#fff', fontSize: 20, fontWeight: '900' }}>₹{maxSaving.toFixed(0)}</Text></View>}
           </Pressable>}
           <View style={[styles.row, { gap: 8, marginVertical: 14 }]}>
             <View style={styles.search}><Ionicons name="search-outline" size={20} color="#677080" /><TextInput style={styles.input} placeholder="Search for dishes..." placeholderTextColor="#838894" value={searchQuery} onChangeText={setSearchQuery} autoCorrect={false} returnKeyType="search" />{searchQuery ? <Pressable accessibilityLabel="Clear search" onPress={() => setSearchQuery('')}><Ionicons name="close-circle" size={19} color="#888" /></Pressable> : null}</View>
             <Pressable accessibilityRole="button" accessibilityLabel={activeFilterCount ? `Filter menu, ${activeFilterCount} active` : 'Filter menu'} onPress={openFilters} style={[styles.filter, activeFilterCount > 0 && { borderColor: '#ff7500', backgroundColor: '#fff3e8' }]}><Ionicons name="options-outline" size={20} color={activeFilterCount ? '#ff7500' : '#293241'} /><Text style={{ fontWeight: '600', fontSize: 12, color: activeFilterCount ? '#ff7500' : '#293241' }}>Filters{activeFilterCount ? ` (${activeFilterCount})` : ''}</Text></Pressable>
           </View>
-          {menuItems.length > 0 && <View style={[styles.row, { gap: 8, marginBottom: 14 }]}>
+          {menuFoodTypes.length > 0 && <View style={[styles.row, { gap: 8, marginBottom: 14 }]}>
             {availableFoodFilters.map(filter => {
               const active = foodFilter === filter.id;
               return <Pressable key={filter.id} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={`Show ${filter.label} items`} onPress={() => setFoodFilter(filter.id)} style={[styles.foodChip, active && styles.foodChipActive]}>
@@ -460,7 +514,7 @@ export default function RestaurantDetailsScreen() {
             })}
           </View>}
           <ScrollView horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 18 }}>
-            {categories.map(category => <Pressable accessibilityRole="button" accessibilityState={{ selected: selectedCategory === category.id }} key={category.id} onPress={() => setSelectedCategory(category.id)} style={[styles.category, selectedCategory === category.id && styles.categoryActive]}><Ionicons name={iconForCategory(category.name)} size={26} color={selectedCategory === category.id ? '#fff' : '#ff7500'} /><Text numberOfLines={2} style={[styles.categoryText, selectedCategory === category.id && { color: '#fff' }]}>{category.name}</Text></Pressable>)}
+            {categories.map(category => <Pressable accessibilityRole="button" accessibilityState={{ selected: selectedCategory === category.id }} key={category.id} onPress={() => setSelectedCategory(category.id)} style={[styles.category, selectedCategory === category.id && styles.categoryActive]}><Ionicons name={iconForCategory(category.name)} size={16} color={selectedCategory === category.id ? '#fff' : '#ff7500'} /><Text numberOfLines={1} style={[styles.categoryText, selectedCategory === category.id && { color: '#fff' }]}>{category.name}</Text></Pressable>)}
           </ScrollView>
         </View>
         {combos.length > 0 && <View onLayout={event => { comboOffset.current = event.nativeEvent.layout.y; }}>
@@ -470,10 +524,16 @@ export default function RestaurantDetailsScreen() {
         {offers.length > 0 && <ScrollView horizontal removeClippedSubviews={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10, paddingBottom: 14 }}>{offers.map(offer => <Pressable key={offer._id} accessibilityRole="button" accessibilityLabel={offer.name} disabled={!offer.couponCode} onPress={() => { if (offer.couponCode && parsedRestaurant) { setPendingOffer({ branchId: String(parsedRestaurant.id), couponCode: offer.couponCode }); showAlert('Offer saved', `${offer.couponCode} will be applied at checkout.`); } }} style={styles.offer}><Text style={styles.savings}>{formatBranchOfferHeadline(offer)}</Text><Text style={styles.comboName}>{offer.name}</Text>{!!offer.description && <Text style={styles.muted}>{offer.description}</Text>}{offer.details ? <Text style={styles.muted}>{offer.details}</Text> : offer.minimumOrder > 0 && <Text style={styles.muted}>Min order ₹{offer.minimumOrder}</Text>}</Pressable>)}</ScrollView>}
         <View style={styles.sectionHeader}><Text style={styles.heading}>Menu</Text>{activeFilterCount > 0 && <Pressable accessibilityRole="button" onPress={() => setFilters(DEFAULT_FILTERS)} style={[styles.chip, { borderColor: '#ff7500' }]}><Text style={{ color: '#ff7500', fontSize: 12, fontWeight: '700' }}>Clear filters</Text><Ionicons name="close" size={13} color="#ff7500" /></Pressable>}</View>
       </>}
-      ListEmptyComponent={<View style={{ padding: 32, alignItems: 'center' }}>{loadingHome ? <ActivityIndicator color="#ff7500" /> : <Text style={styles.muted}>{foodFilter !== 'ALL' ? `No ${FOOD_FILTERS.find(f => f.id === foodFilter)?.label} items match your selection.` : 'No items match your selection.'}</Text>}</View>}
-      renderItem={({ item }) => <ProductCard layout="list" product={item} onPress={() => onProductPress(item)} onCustomize={handleOpenCustomizeModal} canAddToCart={isWithinServiceArea && item.inStock !== false} onAddUnavailablePress={() => showAlert('Unavailable', item.inStock === false ? 'This item is currently out of stock.' : SERVICE_UNAVAILABLE_MESSAGE)} restaurantName={parsedRestaurant?.name} />}
+      ListEmptyComponent={<View style={{ padding: 32, alignItems: 'center' }}>{loadingHome || !menuReady ? <ActivityIndicator color="#ff7500" /> : <Text style={styles.muted}>{foodFilter !== 'ALL' ? `No ${FOOD_FILTERS.find(f => f.id === foodFilter)?.label} items match your selection.` : 'No items match your selection.'}</Text>}</View>}
+      renderItem={renderMenuItem}
+      onEndReached={() => void loadMoreMenu()}
+      onEndReachedThreshold={0.6}
+      ListFooterComponent={loadingMore ? <View style={{ paddingVertical: 20 }}><ActivityIndicator color="#ff7500" /></View> : null}
+      initialNumToRender={6}
+      maxToRenderPerBatch={6}
+      windowSize={9}
     />
-    {totals.displayCount > 0 && <Pressable accessibilityRole="button" accessibilityLabel={`View cart, ${totals.displayCount} items, ₹${totals.total.toFixed(0)}`} onPress={() => router.push('/user/cart')} style={[styles.cart, { bottom: Math.max(insets.bottom, 10) }]}><Ionicons name="cart-outline" color="#fff" size={31} /><View style={{ flex: 1, marginLeft: 12 }}><Text style={styles.cartPrice}>₹{totals.total.toFixed(0)}</Text><Text style={styles.cartCount}>{totals.displayCount} items</Text></View><View style={styles.cartLink}><Text style={styles.whiteBold}>View Cart</Text><Ionicons name="arrow-forward" size={23} color="#fff" /></View></Pressable>}
+    {totals.displayCount > 0 && <Pressable accessibilityRole="button" accessibilityLabel={`View cart, ${totals.displayCount} items, ₹${totals.total.toFixed(0)}`} onPress={() => router.push('/user/cart')} style={[styles.cart, { bottom: insets.bottom + 10 }]}><Ionicons name="bag-handle" color="#fff" size={22} /><View style={{ flex: 1, marginLeft: 12 }}><Text style={styles.cartCount}>{totals.displayCount} item{totals.displayCount === 1 ? '' : 's'} added</Text><Text style={styles.cartPrice}>₹{totals.total.toFixed(0)}</Text></View><View style={styles.cartLink}><Text style={styles.whiteBold}>View cart</Text><Ionicons name="chevron-forward" size={18} color="#fff" /></View></Pressable>}
     <Modal visible={filtersVisible} transparent animationType="slide" onRequestClose={cancelFilters}>
       <View style={styles.modalShade}>
         <Pressable style={StyleSheet.absoluteFillObject} accessibilityLabel="Close filters" onPress={cancelFilters} />
@@ -527,19 +587,26 @@ const styles = StyleSheet.create({
   restaurantName: { color: '#fff', fontSize: 23, lineHeight: 28, fontWeight: '800' }, cuisine: { color: '#eee', fontSize: 12, lineHeight: 18, marginTop: 5 },
   metaPill: { borderColor: '#ffffff70', borderWidth: 1, borderRadius: 20, paddingHorizontal: 9, paddingVertical: 5, flexDirection: 'row', gap: 5, alignItems: 'center' }, heroMeta: { color: '#fff', fontSize: 12 }, open: { backgroundColor: '#248912', color: '#fff', fontSize: 11, paddingVertical: 4, paddingHorizontal: 9, borderRadius: 12 },
   sheet: { marginTop: -16, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 12, paddingHorizontal: 16, backgroundColor: '#fff' },
-  banner: { backgroundColor: '#ffe9ce', borderRadius: 18, minHeight: 154, padding: 14, overflow: 'hidden', justifyContent: 'center' }, bannerKicker: { fontSize: 17, fontWeight: '900', color: '#20170f' }, bannerTitle: { color: '#ff7500', fontSize: 20, fontWeight: '900' }, bannerCopy: { fontSize: 11, color: '#4b382a', marginTop: 5 }, bannerCta: { alignSelf: 'flex-start', marginTop: 11, backgroundColor: '#ff7500', borderRadius: 9, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  bannerPhoto: { position: 'absolute', right: -20, bottom: -20, width: '48%', height: 155, borderRadius: 80, overflow: 'hidden' }, bannerSaving: { position: 'absolute', right: 12, top: 10, backgroundColor: '#ff7500', padding: 9, borderRadius: 40, alignItems: 'center' },
+  banner: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff6ee', borderWidth: 1, borderColor: '#ffe2c8', borderRadius: 16, paddingVertical: 10, paddingHorizontal: 12 },
+  bannerKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, color: '#b66324' },
+  bannerTitle: { fontSize: 17, fontWeight: '900', color: T.color.ink, marginTop: 1 },
+  bannerActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  bannerSaving: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, backgroundColor: T.color.successSoft },
+  bannerSavingText: { fontSize: 11, fontWeight: '800', color: T.color.success },
+  bannerCta: { backgroundColor: '#ff7500', borderRadius: 999, paddingHorizontal: 11, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  bannerCtaText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  bannerPhoto: { width: 72, height: 72, borderRadius: 14, overflow: 'hidden', backgroundColor: '#ffe9ce' },
   whiteBold: { color: '#fff', fontSize: 14, fontWeight: '800' }, search: { flex: 1, minHeight: 48, borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10 }, input: { flex: 1, fontSize: 13, padding: 8, color: '#252b36' }, filter: { minHeight: 48, flexDirection: 'row', gap: 5, alignItems: 'center', borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 14, paddingHorizontal: 10 },
-  category: { width: 80, minHeight: 76, backgroundColor: '#fff3e8', borderRadius: 16, alignItems: 'center', justifyContent: 'center', padding: 8, gap: 5 }, categoryActive: { backgroundColor: '#ff7500' }, categoryText: { color: '#252b36', fontSize: 11, lineHeight: 15, fontWeight: '700', textAlign: 'center' },
+  category: { flexDirection: 'row', height: 38, backgroundColor: '#fff', borderWidth: 1, borderColor: T.color.line, borderRadius: T.radius.pill, alignItems: 'center', paddingHorizontal: 14, gap: 6 }, categoryActive: { backgroundColor: T.color.brand, borderColor: T.color.brand }, categoryText: { color: T.color.inkSoft, fontSize: 13, fontWeight: '700' },
   sectionHeader: { paddingHorizontal: 16, marginTop: 4, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, heading: { color: '#111827', fontWeight: '800', fontSize: 18 },
-  comboCard: { width: 220, marginRight: 12, borderWidth: 1, borderColor: '#eaeaea', borderRadius: 15, overflow: 'hidden', backgroundColor: '#fff' }, comboImage: { width: '100%', height: 100 }, comboName: { fontSize: 14, fontWeight: '800', color: '#17202e', marginBottom: 3 }, muted: { fontSize: 11, lineHeight: 16, color: '#7b818b' }, price: { fontSize: 17, fontWeight: '800', color: '#ff7500' }, oldPrice: { marginLeft: 6, textDecorationLine: 'line-through', color: '#9298a1', fontSize: 11 }, savings: { color: '#ff7500', fontSize: 11, fontWeight: '700', marginTop: 3 }, comboAdd: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#ff7500', alignItems: 'center', justifyContent: 'center' },
+  comboCard: { width: 220, marginRight: 12, borderWidth: 1, borderColor: '#eaeaea', borderRadius: 15, overflow: 'hidden', backgroundColor: '#fff' }, comboImage: { width: '100%', height: 100 }, comboName: { fontSize: 14, fontWeight: '800', color: '#17202e', marginBottom: 3 }, muted: { fontSize: 11, lineHeight: 16, color: '#7b818b' }, price: { fontSize: 17, fontWeight: '800', color: '#ff7500' }, oldPrice: { marginLeft: 6, textDecorationLine: 'line-through', color: '#9298a1', fontSize: 11 }, savings: { color: T.color.success, fontSize: 11, fontWeight: '700', marginTop: 3 }, comboAdd: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#ff7500', alignItems: 'center', justifyContent: 'center' },
   stepper: { flexDirection: 'row', alignItems: 'center', borderColor: '#ffd4ad', borderWidth: 1, borderRadius: 20 }, step: { padding: 8 }, stepValue: { color: '#ff7500', fontWeight: '800', fontSize: 12 }, offer: { width: 220, padding: 12, backgroundColor: '#fff7ed', borderRadius: 12 }, chip: { flexDirection: 'row', gap: 5, alignItems: 'center', borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 18, padding: 8 },
   foodChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 18, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#fff' }, foodChipActive: { borderColor: '#ff7500', backgroundColor: '#fff3e8' }, foodChipText: { fontSize: 12, fontWeight: '700', color: '#293241' },
-  cart: { position: 'absolute', left: 12, right: 12, borderRadius: 15, backgroundColor: '#ff7500', paddingHorizontal: 17, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', elevation: 8 }, cartPrice: { color: '#fff', fontWeight: '900', fontSize: 22 }, cartCount: { color: '#fff', fontSize: 12, marginTop: 2 }, cartLink: { flexDirection: 'row', alignItems: 'center', gap: 10, borderLeftWidth: 1, borderLeftColor: '#ffffff60', paddingLeft: 20 },
+  cart: { position: 'absolute', left: 16, right: 16, minHeight: 56, borderRadius: T.radius.lg, backgroundColor: T.color.brand, paddingHorizontal: 16, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', ...T.shadow.float }, cartPrice: { color: '#fff', fontWeight: '800', fontSize: 16, marginTop: 1 }, cartCount: { color: '#ffffffd9', fontSize: 11, fontWeight: '700', letterSpacing: 0.3 }, cartLink: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   modalShade: { flex: 1, backgroundColor: '#0007', justifyContent: 'flex-end' }, modal: { backgroundColor: '#fff', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 20, paddingTop: 20 },
   filterGroupLabel: { marginTop: 14, fontSize: 12, fontWeight: '800', letterSpacing: 0.4, color: '#8a909a', textTransform: 'uppercase' },
   filterOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11 }, filterOptionText: { fontSize: 14, color: '#293241' }, filterOptionTextActive: { color: '#ff7500', fontWeight: '700' },
   resetText: { color: '#ff7500', fontWeight: '700', fontSize: 13 },
   modalButton: { flex: 1, minHeight: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }, modalButtonPrimary: { backgroundColor: '#ff7500' }, modalButtonSecondary: { borderWidth: 1, borderColor: '#e1e3e8', backgroundColor: '#fff' }, modalButtonSecondaryText: { color: '#293241', fontSize: 14, fontWeight: '700' },
-  menuSectionHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, backgroundColor: '#fff' }, menuSectionTitle: { fontSize: 16, fontWeight: '800', color: '#17202e' }, menuSectionCount: { fontSize: 12, color: '#8a909a' },
+  menuSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#f1f1f1', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, backgroundColor: '#fff' }, menuSectionTitle: { fontSize: 16, fontWeight: '800', color: '#17202e' }, menuSectionCount: { fontSize: 12, color: '#8a909a' },
 });

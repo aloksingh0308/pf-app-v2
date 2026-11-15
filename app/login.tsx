@@ -1,16 +1,17 @@
+import { AuthBackdrop, AuthBrandHeader, AuthCard } from "@/components/AuthBackdrop";
 import AppButton from "@/components/common/AppButton";
 import { AppColors } from "@/constants/appColors";
 import { AppStrings } from "@/constants/appStrings";
 import { useAppLoader } from "@/hooks/useAppLoader";
 import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Keyboard, KeyboardAvoidingView, Platform, ScrollView, TouchableWithoutFeedback, View } from "react-native";
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, TouchableWithoutFeedback, View } from "react-native";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch } from "react-redux";
 import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../services/alertService";
-import { errorReason, track } from "../services/analytics";
+import { errorParams, track } from "../services/analytics";
 import { AppAuthUser, authService, OtpConfirmationResult } from "../services/authService";
 import { OTP_CONFIG } from "../config/otp";
 import { storageService } from "../services/storageService";
@@ -18,6 +19,9 @@ import { userService } from "../services/userService";
 import { AppDispatch } from "../store";
 import { setError, setLoading, setUser } from "../store/slices/authSlice";
 import { moderateScale, moderateVerticalScale, scaleFont } from "../utils/responsive";
+import { T } from '@/constants/tokens';
+
+const INPUT_BG = T.color.inputBg;
 
 const normalizePhoneForLookup = (phone: string): string => {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -34,7 +38,7 @@ const normalizePhoneInput = (value: string): string => {
   return digits;
 };
 
-const LOGIN_BUTTON_STYLE = { minHeight: moderateVerticalScale(50) } as const;
+const LOGIN_BUTTON_STYLE = { marginTop: moderateVerticalScale(6) } as const;
 
 const LoginScreen = () => {
   const { show: showGlobalLoader, hide: hideGlobalLoader } = useAppLoader();
@@ -54,14 +58,8 @@ const LoginScreen = () => {
     return () => clearTimeout(timer);
   }, [resendIn]);
   const dispatch = useDispatch<AppDispatch>();
-  const scrollContentStyle = useMemo(
-    () => ({
-      flexGrow: 1,
-      paddingBottom: moderateVerticalScale(40),
-      paddingTop: moderateVerticalScale(300),
-    }),
-    []
-  );
+  const insets = useSafeAreaInsets();
+  const [phoneFocused, setPhoneFocused] = useState(false);
 
   useEffect(() => {
     hideGlobalLoader();
@@ -117,7 +115,7 @@ const LoginScreen = () => {
         ? 'Network error while requesting OTP. Check your internet connection and retry.'
         : String(error?.message || 'Failed to send OTP. Please try again.');
       dispatch(setError(errorMessage));
-      track('otp_request_failed', { reason: errorReason(error), network: isNetworkError });
+      track('otp_request_failed', { ...errorParams(error), network: isNetworkError });
       showErrorAlert(error, errorMessage, 'OTP Failed');
     }
   };
@@ -156,7 +154,7 @@ const LoginScreen = () => {
             ? 'OTP expired. Please request a new one.'
             : 'OTP verification failed. Please try again.';
       dispatch(setError(errorMessage));
-      track('otp_verify_failed', { reason: errorReason(error) });
+      track('otp_verify_failed', { ...errorParams(error) });
       showErrorAlert(error, errorMessage, 'Verification Failed');
     }
   };
@@ -173,7 +171,7 @@ const LoginScreen = () => {
       if (error?.status === 429 && error?.retryAfterSeconds) setResendIn(Math.min(Number(error.retryAfterSeconds), 24 * 60 * 60));
       const message = String(error?.message || "Couldn't resend the OTP. Please try again.");
       dispatch(setError(message));
-      track('otp_request_failed', { reason: errorReason(error), resend: true });
+      track('otp_request_failed', { ...errorParams(error), resend: true });
       showErrorAlert(error, message, 'Resend Failed');
     } finally {
       setResending(false);
@@ -224,7 +222,7 @@ const LoginScreen = () => {
       hideGlobalLoader();
       const errorMessage = "Logged in, but your profile couldn't be loaded. Please try again.";
       dispatch(setError(errorMessage));
-      track('login_failed', { reason: errorReason(error), stage: 'profile_load' });
+      track('login_failed', { ...errorParams(error), stage: 'profile_load' });
       showErrorAlert(error, errorMessage, 'Login Failed');
     }
   };
@@ -235,7 +233,7 @@ const LoginScreen = () => {
   }, []);
 
   return (
-    <Container>
+    <AuthBackdrop>
       <TouchableWithoutFeedback onPress={dismissKeyboard} accessible={false}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -243,68 +241,83 @@ const LoginScreen = () => {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 20 : 0}
         >
           <ScrollView
-            contentContainerStyle={scrollContentStyle}
+            contentContainerStyle={{
+              flexGrow: 1,
+              justifyContent: 'center',
+              paddingHorizontal: moderateScale(20),
+              paddingTop: insets.top + moderateVerticalScale(24),
+              paddingBottom: insets.bottom + moderateVerticalScale(24),
+            }}
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-          <Title>{AppStrings.auth.welcomeBack}</Title>
-          <Subtitle>{AppStrings.auth.loginToContinue}</Subtitle>
-          <Animated.View entering={FadeInDown.delay(80).springify().damping(16)}>
-            <AuthInput
-              placeholder="Phone Number"
-              placeholderTextColor="#888"
-              keyboardType="phone-pad"
-              value={phoneNumber}
-              onChangeText={(value: string) => {
-                const next = normalizePhoneInput(value);
-                // A different number needs a fresh OTP — drop the pending one.
-                if (otpSent && next !== phoneNumber) {
-                  setOtpSent(false);
-                  setConfirmationResult(null);
-                  setOtpCode('');
-                  setResendIn(0);
-                }
-                setPhoneNumber(next);
-              }}
-              editable={!loading}
-            />
-          </Animated.View>
-
-          {otpSent ? (
-            <View>
-              <AuthInput
-                placeholder={`Enter ${otpLength}-digit OTP`}
-                placeholderTextColor="#888"
-                keyboardType="number-pad"
-                textContentType="oneTimeCode"
-                autoComplete="sms-otp"
-                value={otpCode}
-                onChangeText={(value: string) => setOtpCode(value.replace(/\D/g, '').slice(0, otpLength))}
-                maxLength={otpLength}
+          <AuthBrandHeader />
+          <AuthCard>
+            <FieldLabel>Enter Mobile number</FieldLabel>
+            <PhoneRow>
+              <CountryCode $focused={phoneFocused}>
+                <CountryCodeText>+91</CountryCodeText>
+              </CountryCode>
+              <PhoneInput
+                $focused={phoneFocused}
+                onFocus={() => setPhoneFocused(true)}
+                onBlur={() => setPhoneFocused(false)}
+                placeholder="10-digit mobile number"
+                placeholderTextColor="#a99a8e"
+                keyboardType="phone-pad"
+                maxLength={10}
+                value={phoneNumber}
+                style={phoneNumber ? PHONE_FILLED_STYLE : undefined}
+                onChangeText={(value: string) => {
+                  const next = normalizePhoneInput(value);
+                  // A different number needs a fresh OTP — drop the pending one.
+                  if (otpSent && next !== phoneNumber) {
+                    setOtpSent(false);
+                    setConfirmationResult(null);
+                    setOtpCode('');
+                    setResendIn(0);
+                  }
+                  setPhoneNumber(next);
+                }}
                 editable={!loading}
               />
-            </View>
-          ) : null}
+            </PhoneRow>
 
-          <View>
+            {otpSent ? (
+              <View>
+                <FieldLabel>Enter OTP</FieldLabel>
+                <OtpHint>
+                  Sent a {otpLength}-digit code to <OtpHintStrong>+91 {phoneNumber}</OtpHintStrong>
+                </OtpHint>
+                <OtpBoxes
+                  length={otpLength}
+                  value={otpCode}
+                  onChange={(value) => setOtpCode(value.replace(/\D/g, '').slice(0, otpLength))}
+                  editable={!loading}
+                />
+              </View>
+            ) : (
+              <Hint>We&apos;ll send a one-time password to verify your number. New here? Your account is created after verification.</Hint>
+            )}
+
             <AppButton
-              title={otpSent ? 'Verify OTP & Login' : 'Send OTP'}
+              title={otpSent ? 'Verify OTP & Login' : 'Continue'}
               onPress={otpSent ? handleVerifyOtp : handleSendOtp}
               loading={loading}
               style={LOGIN_BUTTON_STYLE}
             />
-          </View>
 
-          {otpSent ? (
-            <ForgotPasswordContainer>
-              <ForgotPasswordLink onPress={handleResendOtp} disabled={loading || resending || resendIn > 0}>
-                <ForgotPasswordText style={resendIn > 0 || resending ? { opacity: 0.5 } : undefined}>
-                  {resending ? 'Sending…' : resendIn > 0 ? `Resend OTP in ${formatWait(resendIn)}` : 'Resend OTP'}
-                </ForgotPasswordText>
-              </ForgotPasswordLink>
-            </ForgotPasswordContainer>
-          ) : null}
+            {otpSent ? (
+              <ResendContainer>
+                <ResendLink onPress={handleResendOtp} disabled={loading || resending || resendIn > 0}>
+                  <ResendText style={resendIn > 0 || resending ? { opacity: 0.5 } : undefined}>
+                    {resending ? 'Sending…' : resendIn > 0 ? `Resend OTP in ${formatWait(resendIn)}` : 'Resend OTP'}
+                  </ResendText>
+                </ResendLink>
+              </ResendContainer>
+            ) : null}
+          </AuthCard>
 
           <PolicyContainer>
             <PolicyText>{AppStrings.auth.byContinuing}</PolicyText>
@@ -320,11 +333,75 @@ const LoginScreen = () => {
           </ScrollView>
         </KeyboardAvoidingView>
       </TouchableWithoutFeedback>
-    </Container>
+    </AuthBackdrop>
   );
 };
 
 const RESEND_COOLDOWN_SECONDS = 30;
+
+/** One round box per digit. A single transparent TextInput sits on top of the row, so SMS
+ *  autofill (oneTimeCode / sms-otp), paste and backspace all behave like a normal field. */
+function OtpBoxes({ length, value, onChange, editable }: { length: number; value: string; onChange: (v: string) => void; editable: boolean }) {
+  const inputRef = useRef<TextInput>(null);
+  const [focused, setFocused] = useState(false);
+  // Open the keyboard as soon as the OTP step appears.
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 250);
+    return () => clearTimeout(t);
+  }, []);
+  const activeIndex = Math.min(value.length, length - 1);
+  return (
+    <Pressable onPress={() => inputRef.current?.focus()} accessibilityLabel={`Enter the ${length}-digit OTP`} style={otpStyles.wrap}>
+      <View style={otpStyles.row} pointerEvents="none">
+        {Array.from({ length }, (_, i) => {
+          const digit = value[i];
+          const isActive = focused && i === activeIndex;
+          return (
+            <View key={i} style={[otpStyles.box, digit ? otpStyles.boxFilled : null, isActive ? otpStyles.boxActive : null]}>
+              <OtpDigit $empty={!digit}>{digit ?? '-'}</OtpDigit>
+            </View>
+          );
+        })}
+      </View>
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={onChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+        autoComplete="sms-otp"
+        maxLength={length}
+        editable={editable}
+        caretHidden
+        style={otpStyles.hiddenInput}
+        accessibilityLabel="OTP"
+      />
+    </Pressable>
+  );
+}
+
+const OTP_BOX = moderateScale(48);
+const otpStyles = StyleSheet.create({
+  wrap: { marginBottom: moderateVerticalScale(18) },
+  row: { flexDirection: 'row', justifyContent: 'space-between', gap: moderateScale(8) },
+  box: {
+    flex: 1,
+    maxWidth: OTP_BOX,
+    aspectRatio: 1,
+    borderRadius: moderateScale(12),
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: INPUT_BG,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  boxFilled: { backgroundColor: T.color.surface, borderColor: T.color.brandBorder },
+  boxActive: { backgroundColor: T.color.surface, borderColor: T.color.brand },
+  // Covers the row, invisible; still receives taps, typing, paste and SMS autofill.
+  hiddenInput: { ...StyleSheet.absoluteFillObject, color: 'transparent', backgroundColor: 'transparent', opacity: 0.02 },
+});
 
 function formatWait(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -334,36 +411,74 @@ function formatWait(seconds: number): string {
 
 export default LoginScreen;
 
-const Container = styled.ImageBackground.attrs({
-  source: require('../assets/images/login_bg.png'),
-  resizeMode: 'cover',
-})`
+
+const FieldLabel = styled.Text`
+  font-size: ${scaleFont(18)}px;
+  font-weight: 800;
+  color: #653919;
+  margin-bottom: ${moderateVerticalScale(12)}px;
+`;
+
+const PhoneRow = styled.View`
+  flex-direction: row;
+  align-items: stretch;
+  gap: ${moderateScale(10)}px;
+  margin-bottom: ${moderateVerticalScale(14)}px;
+`;
+
+const CountryCode = styled.View<{ $focused?: boolean }>`
+  width: ${moderateScale(56)}px;
+  height: ${moderateScale(56)}px;
+  border-radius: ${moderateScale(14)}px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${INPUT_BG};
+  border: 1.5px solid ${(p: { $focused?: boolean }) => (p.$focused ? T.color.brandBorder : 'transparent')};
+`;
+
+const CountryCodeText = styled.Text`
+  font-size: ${scaleFont(16)}px;
+  font-weight: 700;
+  color: #653919;
+`;
+
+const PhoneInput = styled.TextInput<{ $focused?: boolean }>`
   flex: 1;
-  background-color: ${AppColors.background};
+  height: ${moderateScale(56)}px;
+  border-radius: ${moderateScale(14)}px;
   padding: 0 ${moderateScale(20)}px;
-`;
-
-const Title = styled.Text`
-  font-size: ${scaleFont(28)}px;
-  font-weight: bold;
-  color: ${AppColors.textPrimary};
-  margin-bottom: ${moderateVerticalScale(10)}px;
-`;
-
-const Subtitle = styled.Text`
   font-size: ${scaleFont(16)}px;
-  color: ${AppColors.textSecondary};
-  margin-bottom: ${moderateVerticalScale(30)}px;
+  color: ${T.color.ink};
+  background-color: ${(p: { $focused?: boolean }) => (p.$focused ? T.color.surface : INPUT_BG)};
+  border: 1.5px solid ${(p: { $focused?: boolean }) => (p.$focused ? T.color.brand : 'transparent')};
 `;
 
-const AuthInput = styled.TextInput`
-  border: 1px solid ${AppColors.inputBorder};
-  border-radius: ${moderateScale(8)}px;
-  padding: ${moderateScale(14)}px;
+// Bolder, spaced digits once typed; the placeholder stays regular weight.
+const PHONE_FILLED_STYLE = { fontWeight: '600', letterSpacing: 1, fontSize: scaleFont(17) } as const;
+
+const OtpHint = styled.Text`
+  font-size: ${scaleFont(12.5)}px;
+  color: #8a6a55;
+  margin-top: ${moderateVerticalScale(-4)}px;
+  margin-bottom: ${moderateVerticalScale(12)}px;
+`;
+
+const OtpHintStrong = styled.Text`
+  font-weight: 700;
+  color: #653919;
+`;
+
+const OtpDigit = styled.Text<{ $empty?: boolean }>`
+  font-size: ${scaleFont(20)}px;
+  font-weight: ${(p: { $empty?: boolean }) => (p.$empty ? '500' : '700')};
+  color: ${(p: { $empty?: boolean }) => (p.$empty ? T.color.faint : T.color.ink)};
+`;
+
+const Hint = styled.Text`
+  font-size: ${scaleFont(12.5)}px;
+  line-height: ${scaleFont(18)}px;
+  color: #8a6a55;
   margin-bottom: ${moderateVerticalScale(16)}px;
-  font-size: ${scaleFont(16)}px;
-  color: ${AppColors.textPrimary};
-  background-color: ${AppColors.background};
 `;
 
 const PolicyContainer = styled.View`
@@ -371,37 +486,33 @@ const PolicyContainer = styled.View`
   flex-wrap: wrap;
   justify-content: center;
   align-items: center;
-  margin-top: ${moderateVerticalScale(12)}px;
-  margin-bottom: ${moderateVerticalScale(8)}px;
+  margin-top: ${moderateVerticalScale(18)}px;
+  padding: 0 ${moderateScale(12)}px;
 `;
 
 const PolicyText = styled.Text`
   font-size: ${scaleFont(12)}px;
-  color: #000;
+  color: #6b5a4e;
 `;
 
-const PolicyLink = styled.TouchableOpacity`
+const PolicyLink = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding-horizontal: ${moderateScale(2)}px;
 `;
 
 const PolicyLinkText = styled.Text`
   font-size: ${scaleFont(12)}px;
-  color: ${AppColors.primary};
+  color: ${T.color.brand};
   font-weight: 700;
 `;
 
-// Forgot Password UI styled-components (must be defined before use)
-const ForgotPasswordContainer = styled.View`
-  align-items: flex-end;
-  margin-top: ${moderateVerticalScale(8)}px;
-  margin-bottom: ${moderateVerticalScale(8)}px;
+const ResendContainer = styled.View`
+  align-items: center;
+  margin-top: ${moderateVerticalScale(14)}px;
 `;
 
-const ForgotPasswordLink = styled.TouchableOpacity``;
-const ForgotPasswordText = styled.Text`
-  color: ${AppColors.primary};
+const ResendLink = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })``;
+const ResendText = styled.Text`
+  color: ${T.color.brand};
   font-size: ${scaleFont(15)}px;
   font-weight: 700;
 `;
-
-

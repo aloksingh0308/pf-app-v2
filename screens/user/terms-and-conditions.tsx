@@ -1,7 +1,7 @@
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
-import { AppColors } from '@/constants/appColors';
 import React from 'react';
 import styled from 'styled-components/native';
+import { T } from '@/constants/tokens';
 
 export default function TermsAndConditionsScreen() {
   return (
@@ -72,7 +72,7 @@ export default function TermsAndConditionsScreen() {
 
 const Container = styled(PageScreen)`
   flex: 1;
-  background-color: ${AppColors.background};
+  background-color: ${T.color.surface};
 `;
 
 
@@ -93,20 +93,20 @@ const Content = styled.ScrollView.attrs({
 
 const MetaText = styled.Text`
   font-size: 13px;
-  color: ${AppColors.textSecondary};
+  color: ${T.color.muted};
   margin-bottom: 8px;
 `;
 
 const SectionTitle = styled.Text`
   font-size: 16px;
   font-weight: 700;
-  color: ${AppColors.textPrimary};
+  color: ${T.color.ink};
   margin-bottom: 8px;
   margin-top: 12px;
 `;
 
 const Paragraph = styled.Text`
   font-size: 14px;
-  color: ${AppColors.textSecondary};
+  color: ${T.color.muted};
   line-height: 22px;
 `;

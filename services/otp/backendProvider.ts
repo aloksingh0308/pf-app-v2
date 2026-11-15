@@ -13,7 +13,7 @@ async function send(phoneE164: string) {
     { phone: phoneE164 }
   );
   const nonce = await solveProofOfWork(salt, difficulty);
-  const res = await apiClient.post<{ devOtp?: string }>('/public/customers/otp/send', { phone: phoneE164, challenge, nonce });
+  const res = await apiClient.postIdempotent<{ devOtp?: string }>('/public/customers/otp/send', { phone: phoneE164, challenge, nonce });
   if (__DEV__) console.log('[otp:backend] send response', JSON.stringify(res ?? null), '— no SMS is sent by this provider');
 }
 
@@ -26,7 +26,7 @@ export const backendOtpProvider: OtpProvider = {
       session: {
         otpLength: OTP_CONFIG.otpLength,
         verify: async (code) => {
-          const login = await apiClient.post<CustomerLoginResponse>('/public/customers/otp/verify', { phone: phoneE164, code });
+          const login = await apiClient.postIdempotent<CustomerLoginResponse>('/public/customers/otp/verify', { phone: phoneE164, code });
           if (__DEV__) console.log('[otp:backend] verify response', JSON.stringify({ customerId: login.customer._id, phone: login.customer.phone, hasToken: Boolean(login.token) }));
           return login;
         },

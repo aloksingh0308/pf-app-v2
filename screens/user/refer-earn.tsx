@@ -68,7 +68,7 @@ export default function ReferEarnScreen() {
             accessibilityLabel={code ? `Copy referral code ${code}` : 'Referral code not available'}
             disabled={!code}
             onPress={() => void copyCode()}
-            style={({ pressed }) => [styles.codeBox, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.codeBox, pressed && { opacity: 0.8 }]}
           >
             <Text selectable style={styles.codeText}>{code || '— — —'}</Text>
             <View style={styles.copyPill}>
@@ -78,11 +78,11 @@ export default function ReferEarnScreen() {
           </Pressable>
 
           <View style={styles.actions}>
-            <Pressable accessibilityRole="button" disabled={!code} onPress={() => void shareLink()} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }, !code && { opacity: 0.5 }]}>
+            <Pressable accessibilityRole="button" disabled={!code} onPress={() => void shareLink()} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.8 }, !code && { opacity: 0.5 }]}>
               <Ionicons name="share-social" size={18} color="#fff" />
               <Text style={styles.primaryBtnText}>Share link</Text>
             </Pressable>
-            <Pressable accessibilityRole="button" disabled={!code} onPress={() => setQrVisible(true)} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.9 }, !code && { opacity: 0.5 }]}>
+            <Pressable accessibilityRole="button" disabled={!code} onPress={() => setQrVisible(true)} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.8 }, !code && { opacity: 0.5 }]}>
               <Ionicons name="qr-code-outline" size={18} color={Palette.primary} />
               <Text style={styles.secondaryBtnText}>Show QR</Text>
             </Pressable>
@@ -134,7 +134,7 @@ export default function ReferEarnScreen() {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: Palette.page },
   content: { padding: 16 },
-  hero: { backgroundColor: '#fff', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: '#e6e6ea' },
+  hero: { backgroundColor: '#fff', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: Palette.hairline },
   heroIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: Palette.primarySoft, alignItems: 'center', justifyContent: 'center' },
   heroTitle: { fontSize: 20, fontWeight: '800', color: Palette.text, marginTop: 14, textAlign: 'center' },
   heroCopy: { fontSize: 13.5, lineHeight: 20, color: Palette.textSecondary, marginTop: 6, textAlign: 'center' },
@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
   secondaryBtn: { flex: 1, minHeight: 48, borderRadius: 12, backgroundColor: Palette.primarySoft, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   secondaryBtnText: { color: Palette.primary, fontWeight: '800', fontSize: 14 },
-  statCard: { marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: '#e6e6ea' },
+  statCard: { marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: Palette.hairline },
   statIcon: { width: 42, height: 42, borderRadius: 12, backgroundColor: Palette.successSoft, alignItems: 'center', justifyContent: 'center' },
   statValue: { fontSize: 20, fontWeight: '800', color: Palette.text },
   statLabel: { fontSize: 12.5, color: Palette.textSecondary, marginTop: 1 },

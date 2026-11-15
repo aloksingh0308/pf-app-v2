@@ -22,7 +22,7 @@ const Bar = styled(Animated.View)`
   z-index: 100;
 `;
 
-const CartButton = styled(TouchableOpacity)`
+const CartButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   background: #f68712;
   padding: 12px 28px;
   border-radius: 24px;

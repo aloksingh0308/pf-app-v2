@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Animated, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { T } from '@/constants/tokens';
 
 interface AddonCardProps {
     addon: {
@@ -77,16 +78,16 @@ export const AddonCard: React.FC<AddonCardProps> = React.memo(({ addon, quantity
       )} */}
             {/* Add button */}
             {quantity === 0 ? (
-                <TouchableOpacity style={styles.roundAddBtn} onPress={handleAdd}>
+                <TouchableOpacity activeOpacity={0.8} style={styles.roundAddBtn} onPress={handleAdd}>
                     <Text style={styles.roundAddBtnText}>+</Text>
                 </TouchableOpacity>
             ) : (
                 <Animated.View style={[styles.stepper, { opacity: fadeAnim }]}>
-                    <TouchableOpacity style={styles.stepBtn} onPress={onDecrement}>
+                    <TouchableOpacity activeOpacity={0.8} style={styles.stepBtn} onPress={onDecrement}>
                         <Text style={styles.stepText}>-</Text>
                     </TouchableOpacity>
                     <Text style={styles.qty}>{quantity}</Text>
-                    <TouchableOpacity style={styles.stepBtn} onPress={onIncrement}>
+                    <TouchableOpacity activeOpacity={0.8} style={styles.stepBtn} onPress={onIncrement}>
                         <Text style={styles.stepText}>+</Text>
                     </TouchableOpacity>
                 </Animated.View>
@@ -135,7 +136,7 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         fontSize: 17,
         marginBottom: 2,
-        color: '#222',
+        color: T.color.ink,
         textAlign: 'center',
         minHeight: 38,
         maxHeight: 40,
@@ -143,7 +144,7 @@ const styles = StyleSheet.create({
     price: {
         fontWeight: '600',
         fontSize: 16,
-        color: '#222',
+        color: T.color.ink,
         marginBottom: 8,
         textAlign: 'center',
     },
@@ -156,7 +157,7 @@ const styles = StyleSheet.create({
         borderRadius: 19,
         backgroundColor: '#fff',
         borderWidth: 2,
-        borderColor: '#ff7a00',
+        borderColor: T.color.brand,
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 3,
@@ -166,7 +167,7 @@ const styles = StyleSheet.create({
         elevation: 2,
     },
     roundAddBtnText: {
-        color: '#ff7a00',
+        color: T.color.brand,
         fontWeight: '900',
         fontSize: 24,
         textAlign: 'center',
@@ -212,12 +213,12 @@ const styles = StyleSheet.create({
     stepText: {
         fontSize: 18,
         fontWeight: '700',
-        color: '#ff7a00',
+        color: T.color.brand,
     },
     qty: {
         fontSize: 15,
         fontWeight: '700',
         marginHorizontal: 6,
-        color: '#222',
+        color: T.color.ink,
     },
 });

@@ -6,6 +6,7 @@ import { RootState } from '../store';
 import { decrementQuantity, incrementQuantity } from '../store/slices/cartSlice';
 import { AddonCard } from './AddonCard';
 import { useAddToCartWithRestaurantGuard } from '@/hooks/useAddToCartWithRestaurantGuard';
+import { T } from '@/constants/tokens';
 
 type Props = {
   cartItems: string[];
@@ -113,14 +114,14 @@ const styles = StyleSheet.create({
   title: {
     fontWeight: '800',
     fontSize: 18,
-    color: '#222',
+    color: T.color.ink,
     marginLeft: 16,
     marginBottom: 2,
   },
   subtitle: {
     fontWeight: '600',
     fontSize: 14,
-    color: '#888',
+    color: T.color.faint,
     marginLeft: 16,
     marginBottom: 8,
   },
@@ -131,12 +132,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontWeight: '800',
     fontSize: 18,
-    color: '#222',
+    color: T.color.ink,
   },
   emptySubtitle: {
     fontWeight: '600',
     fontSize: 14,
-    color: '#888',
+    color: T.color.faint,
     marginTop: 4,
   },
 });

@@ -116,6 +116,11 @@ export type DeliveryFeeTier = { belowAmount: number; fee: number };
 export type PricingConfig = {
   deliveryFeeTiers: DeliveryFeeTier[];
   packagingCharge: number;
+  /** Food GST % the backend adds to app orders (on items after discounts). */
+  gstPercent?: number;
+  /** The restaurant's menu prices already include that GST: it's taken out of the price
+   *  (shown as "included"), never added on top — the customer pays the menu price. */
+  pricesIncludeGst?: boolean;
   updatedAt?: unknown;
 };
 

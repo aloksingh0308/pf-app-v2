@@ -5,6 +5,7 @@ import { BackHandler, Platform, Pressable, View } from 'react-native';
 import MapView, { Circle, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
+import { T } from '../constants/tokens';
 import { showAlert } from '../services/alertService';
 import { DEFAULT_LOCATION_MAX_AGE_MS, getFreshCachedUserLocation, updateCachedUserAddress, warmupUserLocationCache } from '../services/locationCacheService';
 import { AppDispatch, RootState } from '../store';
@@ -702,12 +703,13 @@ const AddressModalMapPicker = memo(function AddressModalMapPicker({
     <>
       <PlaceSearchContainer>
         <PlaceSearchInputWrap>
-          <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+          <Ionicons name="search" size={18} color={T.color.muted} style={{ marginRight: 8 }} />
           <PlaceSearchInput
-            placeholder="Search location (Google Places)"
-            placeholderTextColor="#999"
+            placeholder="Search for area, street or landmark"
+            placeholderTextColor={T.color.faint}
             value={locationSearchText}
             onChangeText={handleLocationSearchChange}
+            returnKeyType="search"
           />
           {locationSearchText.length > 0 ? (
             <Pressable
@@ -717,70 +719,88 @@ const AddressModalMapPicker = memo(function AddressModalMapPicker({
               onPress={() => handleLocationSearchChange('')}
               style={{ marginLeft: 8, padding: 2 }}
             >
-              <Ionicons name="close-circle" size={20} color="#b0b0b0" />
+              <Ionicons name="close-circle" size={20} color={T.color.faint} />
             </Pressable>
           ) : null}
         </PlaceSearchInputWrap>
         {placePredictions.length > 0 ? (
-          <PlacesDropdown>
-            {placePredictions.map((prediction) => (
-              <PlaceRow key={prediction.place_id} onPress={() => handleSelectPlacePrediction(prediction)}>
-                <PlaceMainText numberOfLines={1}>{prediction.structured_formatting?.main_text || prediction.description}</PlaceMainText>
-                {prediction.structured_formatting?.secondary_text ? (
-                  <PlaceSecondaryText numberOfLines={1}>{prediction.structured_formatting.secondary_text}</PlaceSecondaryText>
-                ) : null}
+          <PlacesDropdown style={T.shadow.float}>
+            {placePredictions.map((prediction, index) => (
+              <PlaceRow
+                key={prediction.place_id}
+                $last={index === placePredictions.length - 1}
+                onPress={() => handleSelectPlacePrediction(prediction)}
+              >
+                <PlaceIcon>
+                  <Ionicons name="location-outline" size={16} color={T.color.inkSoft} />
+                </PlaceIcon>
+                <View style={{ flex: 1 }}>
+                  <PlaceMainText numberOfLines={1}>{prediction.structured_formatting?.main_text || prediction.description}</PlaceMainText>
+                  {prediction.structured_formatting?.secondary_text ? (
+                    <PlaceSecondaryText numberOfLines={1}>{prediction.structured_formatting.secondary_text}</PlaceSecondaryText>
+                  ) : null}
+                </View>
               </PlaceRow>
             ))}
           </PlacesDropdown>
         ) : null}
       </PlaceSearchContainer>
 
-      <View style={{ marginTop: 12, marginBottom: 12 }}>
-        <MapCard style={{ borderRadius: 16, overflow: 'hidden' }}>
-          <MapLocateButton
-            activeOpacity={0.8}
-            disabled={loadingDeliveryMap}
-            onPress={() => void initializeDeliveryMap({ preferCache: true })}
-          >
-            <Ionicons name="locate" size={18} color="#282939" />
-          </MapLocateButton>
-          <MapArea
-            ref={(instance: MapView | null) => {
-              mapRef.current = instance;
-            }}
-            provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-            initialRegion={initialRegion}
-            onMapReady={handleMapReady}
-            onRegionChangeComplete={handleRegionChangeComplete}
-          >
-            {restaurantCoords && (
-              <Circle
-                center={restaurantCoords}
-                radius={5000}
-                strokeColor="rgba(255, 145, 0, 0.5)"
-                fillColor="rgba(255, 145, 0, 0.08)"
-                strokeWidth={1.5}
-              />
-            )}
-          </MapArea>
-          <CenterPinContainer pointerEvents="none">
-            <Ionicons name="location" size={34} color="#FF9100" />
-          </CenterPinContainer>
-        </MapCard>
-        <View style={{ position: 'absolute', top: 12, alignSelf: 'center', backgroundColor: '#fff', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 4, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 4, elevation: 1 }}>
-          <ModalPinLabel>Move map to exact location</ModalPinLabel>
-        </View>
-      </View>
+      <MapCard>
+        <MapArea
+          ref={(instance: MapView | null) => {
+            mapRef.current = instance;
+          }}
+          provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+          initialRegion={initialRegion}
+          onMapReady={handleMapReady}
+          onRegionChangeComplete={handleRegionChangeComplete}
+          toolbarEnabled={false}
+        >
+          {restaurantCoords && (
+            <Circle
+              center={restaurantCoords}
+              radius={5000}
+              strokeColor="rgba(255, 117, 0, 0.45)"
+              fillColor="rgba(255, 117, 0, 0.06)"
+              strokeWidth={1.5}
+            />
+          )}
+        </MapArea>
+        {/* Pin tip sits exactly on the map centre — the point the address is resolved for. */}
+        <PinOverlay pointerEvents="none">
+          <PinStack>
+            <PinBubble>
+              <PinBubbleText>{loadingDeliveryMap ? 'Locating…' : 'Your order will be delivered here'}</PinBubbleText>
+            </PinBubble>
+            <PinBubbleArrow />
+            <Ionicons name="location-sharp" size={38} color={T.color.brand} />
+          </PinStack>
+        </PinOverlay>
+        <MapLocateButton
+          activeOpacity={0.8}
+          disabled={loadingDeliveryMap}
+          accessibilityRole="button"
+          onPress={() => void initializeDeliveryMap({ preferCache: true })}
+          style={T.shadow.card}
+        >
+          <Ionicons name="locate" size={16} color={T.color.brand} />
+          <MapLocateText>Use current location</MapLocateText>
+        </MapLocateButton>
+      </MapCard>
+      <MapHint>Drag the map to place the pin on your exact doorstep.</MapHint>
     </>
   );
 });
 
 export default AddressModalMapPicker;
 
+// Height of the bubble + arrow + pin stacked above the map centre (keeps the pin tip centred).
+const PIN_STACK_HEIGHT = 30 + 6 + 38;
+
 const PlaceSearchContainer = styled.View`
   position: relative;
-  margin-top: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   z-index: 999;
   elevation: 999;
 `;
@@ -789,100 +809,147 @@ const PlaceSearchInputWrap = styled.View`
   flex-direction: row;
   align-items: center;
   border-width: 1px;
-  border-color: #ececec;
-  border-radius: 12px;
-  background-color: #fafafa;
+  border-color: ${T.color.line};
+  border-radius: ${T.radius.md}px;
+  background-color: ${T.color.canvas};
   padding: 0 12px;
-  min-height: 44px;
+  min-height: 48px;
 `;
 
 const PlaceSearchInput = styled.TextInput`
   flex: 1;
-  color: #222;
+  color: ${T.color.ink};
   font-size: 14px;
-  padding: 10px 0;
+  padding: 12px 0;
 `;
 
 const PlacesDropdown = styled.View`
   position: absolute;
-  top: 52px;
+  top: 54px;
   left: 0;
   right: 0;
   border-width: 1px;
-  border-color: #ececec;
-  border-radius: 12px;
-  background-color: #fff;
+  border-color: ${T.color.line};
+  border-radius: ${T.radius.md}px;
+  background-color: ${T.color.surface};
   overflow: hidden;
   z-index: 1000;
   elevation: 1000;
-  max-height: 190px;
+  max-height: 240px;
 `;
 
-const PlaceRow = styled.TouchableOpacity`
-  padding: 10px 12px;
-  border-bottom-width: 1px;
-  border-bottom-color: #f3f3f3;
+const PlaceRow = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $last?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom-width: ${(props: { $last?: boolean }) => (props.$last ? 0 : 1)}px;
+  border-bottom-color: ${T.color.line};
+`;
+
+const PlaceIcon = styled.View`
+  width: 30px;
+  height: 30px;
+  border-radius: 15px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.canvas};
 `;
 
 const PlaceMainText = styled.Text`
-  color: #222;
+  color: ${T.color.ink};
   font-size: 13px;
   font-weight: 700;
 `;
 
 const PlaceSecondaryText = styled.Text`
-  color: #777;
+  color: ${T.color.muted};
   font-size: 12px;
   margin-top: 2px;
 `;
 
 const MapCard = styled.View`
   position: relative;
-  height: 230px;
+  height: 210px;
   border-width: 1px;
-  border-color: #e2e2e2;
-  border-radius: 12px;
+  border-color: ${T.color.line};
+  border-radius: ${T.radius.lg}px;
   overflow: hidden;
-  margin-bottom: 10px;
   z-index: 1;
   elevation: 1;
 `;
 
 const MapArea = styled(MapView)`
   width: 100%;
-  height: 230px;
+  height: 210px;
 `;
 
-const CenterPinContainer = styled.View`
+const PinOverlay = styled.View`
   position: absolute;
-  left: 50%;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  align-items: center;
+`;
+
+const PinStack = styled.View`
+  position: absolute;
   top: 50%;
-  width: 40px;
-  height: 40px;
-  justify-content: center;
+  margin-top: -${PIN_STACK_HEIGHT - 3}px;
   align-items: center;
-  margin-left: -20px;
-  margin-top: -40px;
 `;
 
-const MapLocateButton = styled.TouchableOpacity`
-  width: 34px;
-  height: 34px;
-  border-radius: 17px;
-  align-items: center;
+const PinBubble = styled.View`
+  height: 30px;
   justify-content: center;
-  background-color: #ffffff;
-  border-width: 1px;
-  border-color: #e2e2e2;
+  padding: 0 12px;
+  border-radius: ${T.radius.sm}px;
+  background-color: ${T.color.ink};
+`;
+
+const PinBubbleText = styled.Text`
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+`;
+
+const PinBubbleArrow = styled.View`
+  width: 0;
+  height: 0;
+  border-left-width: 6px;
+  border-right-width: 6px;
+  border-top-width: 6px;
+  border-left-color: transparent;
+  border-right-color: transparent;
+  border-top-color: ${T.color.ink};
+`;
+
+const MapLocateButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   position: absolute;
-  right: 10px;
-  top: 10px;
+  bottom: 12px;
+  align-self: center;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: ${T.radius.pill}px;
+  border-width: 1px;
+  border-color: ${T.color.brandBorder};
+  background-color: ${T.color.surface};
   z-index: 2;
   opacity: ${(props: any) => (props.disabled ? 0.7 : 1)};
 `;
 
-const ModalPinLabel = styled.Text`
-  color: #222;
+const MapLocateText = styled.Text`
+  color: ${T.color.brand};
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 800;
+`;
+
+const MapHint = styled.Text`
+  color: ${T.color.muted};
+  font-size: 12px;
+  text-align: center;
+  margin: 6px 0 12px;
 `;

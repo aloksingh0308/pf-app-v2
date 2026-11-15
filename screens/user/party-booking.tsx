@@ -617,7 +617,7 @@ function MenuSelectPhaseView({ menus, onSelect }: { menus: PartyMenu[]; onSelect
       <PhaseTitle>Choose a Party Menu</PhaseTitle>
       <PhaseSubtitle>Pick the menu you would like to build your party platter from.</PhaseSubtitle>
       {menus.map((menu) => (
-        <MenuOptionCard key={menu.firebaseId} activeOpacity={0.88} onPress={() => onSelect(menu)}>
+        <MenuOptionCard key={menu.firebaseId} activeOpacity={0.8} onPress={() => onSelect(menu)}>
           <MenuOptionTitle>{menu.name}</MenuOptionTitle>
           {menu.description ? <MenuOptionDescription>{menu.description}</MenuOptionDescription> : null}
         </MenuOptionCard>
@@ -642,7 +642,7 @@ function PlatterPhaseView({
       {menu.platterTypes.map((platter) => {
         const isSelected = platter.id === selectedId;
         return (
-          <PlatterCard key={platter.id} $selected={isSelected} activeOpacity={0.88} onPress={() => onSelect(platter.id)}>
+          <PlatterCard key={platter.id} $selected={isSelected} activeOpacity={0.8} onPress={() => onSelect(platter.id)}>
             <PlatterImage source={imageSourceOrLogo(platter.image)} resizeMode="cover" />
             <PlatterCardBody>
               <PlatterCardHeader>
@@ -735,7 +735,7 @@ function ItemStepPhaseView({
           {categoryGroup.items.map((item) => {
             const isSelected = selectedIds.includes(item.firebaseId);
             return (
-              <ItemCard key={item.firebaseId} $selected={isSelected} activeOpacity={0.88} onPress={() => onToggle(step, item.firebaseId)}>
+              <ItemCard key={item.firebaseId} $selected={isSelected} activeOpacity={0.8} onPress={() => onToggle(step, item.firebaseId)}>
                 <ItemImage source={imageSourceOrLogo(item.image)} resizeMode="cover" />
                 <ItemCardMain>
                   <ItemCardTop>
@@ -936,7 +936,7 @@ function DecorationPhaseView({
       <PhaseTitle>Choose Decoration Package</PhaseTitle>
       <PhaseSubtitle>Make your celebration even more memorable.</PhaseSubtitle>
 
-      <DecorationCard $selected={selectedId === null} activeOpacity={0.88} onPress={() => onSelect(null)}>
+      <DecorationCard $selected={selectedId === null} activeOpacity={0.8} onPress={() => onSelect(null)}>
         <DecorationCardHeader>
           <DecorationCardName $selected={selectedId === null}>No Decoration</DecorationCardName>
           <DecorationCardPrice $selected={selectedId === null}>₹0</DecorationCardPrice>
@@ -955,8 +955,8 @@ function DecorationPhaseView({
         packages.map((pkg) => {
           const isSelected = pkg.firebaseId === selectedId;
           return (
-            <DecorationCard key={pkg.firebaseId} $selected={isSelected} activeOpacity={0.88} onPress={() => onSelect(pkg.firebaseId)}>
-              <DecorationImageButton activeOpacity={0.85} onPress={() => openViewer(pkg)}>
+            <DecorationCard key={pkg.firebaseId} $selected={isSelected} activeOpacity={0.8} onPress={() => onSelect(pkg.firebaseId)}>
+              <DecorationImageButton activeOpacity={0.8} onPress={() => openViewer(pkg)}>
                 <DecorationImage source={imageSourceOrLogo(pkg.coverImage)} resizeMode="cover" />
                 <DecorationImageZoomHint>
                   <Ionicons name="expand-outline" size={14} color={PartyColors.white} />
@@ -1149,7 +1149,7 @@ const SuccessSubtitle = styled.Text`
   line-height: 20px;
 `;
 
-const MenuOptionCard = styled(TouchableOpacity)`
+const MenuOptionCard = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   background-color: ${PartyColors.surface};
   border-radius: 16px;
   padding: 18px;
@@ -1170,7 +1170,7 @@ const MenuOptionDescription = styled.Text`
   margin-top: 6px;
 `;
 
-const PlatterCard = styled(TouchableOpacity)<{ $selected: boolean }>`
+const PlatterCard = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })<{ $selected: boolean }>`
   flex-direction: row;
   background-color: ${PartyColors.surface};
   border-radius: 16px;
@@ -1230,7 +1230,7 @@ const SelectedCheck = styled.View`
   right: 14px;
 `;
 
-const DecorationCard = styled(TouchableOpacity)<{ $selected: boolean }>`
+const DecorationCard = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })<{ $selected: boolean }>`
   background-color: ${PartyColors.surface};
   border-radius: 16px;
   padding: 18px;
@@ -1239,7 +1239,7 @@ const DecorationCard = styled(TouchableOpacity)<{ $selected: boolean }>`
   border-color: ${(props: { $selected: boolean }) => (props.$selected ? PartyColors.gold : PartyColors.border)};
 `;
 
-const DecorationImageButton = styled(TouchableOpacity)`
+const DecorationImageButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   margin-bottom: 12px;
 `;
 
@@ -1336,7 +1336,7 @@ const QuantityStepperRow = styled.View`
   gap: 24px;
 `;
 
-const QuantityButton = styled(TouchableOpacity)`
+const QuantityButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   width: 44px;
   height: 44px;
   border-radius: 22px;
@@ -1378,7 +1378,7 @@ const CategoryHeading = styled.Text`
   text-transform: uppercase;
 `;
 
-const ItemCard = styled(TouchableOpacity)<{ $selected: boolean }>`
+const ItemCard = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })<{ $selected: boolean }>`
   flex-direction: row;
   align-items: center;
   background-color: ${PartyColors.surface};
@@ -1546,7 +1546,7 @@ const CouponInput = styled.TextInput`
   color: ${PartyColors.white};
 `;
 
-const CouponApplyButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.85 })<{ disabled?: boolean }>`
+const CouponApplyButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })<{ disabled?: boolean }>`
   background-color: ${PartyColors.gold};
   border-radius: 10px;
   padding: 12px 18px;
@@ -1585,7 +1585,7 @@ const CouponAppliedText = styled.Text`
   margin-top: 2px;
 `;
 
-const CouponRemoveButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.85 })`
+const CouponRemoveButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   padding: 8px 12px;
 `;
 
@@ -1633,7 +1633,7 @@ const OccasionRow = styled.View`
   gap: 8px;
 `;
 
-const OccasionChip = styled(TouchableOpacity)<{ $selected: boolean }>`
+const OccasionChip = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })<{ $selected: boolean }>`
   padding: 9px 14px;
   border-radius: 20px;
   background-color: ${(props: { $selected: boolean }) => (props.$selected ? PartyColors.gold : PartyColors.surface)};
@@ -1691,7 +1691,7 @@ const BottomActionBar = styled.View`
   padding: 14px 18px;
 `;
 
-const PrimaryButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.88 })`
+const PrimaryButton = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   margin-top: 12px;
   background-color: ${PartyColors.gold};
   border-radius: 14px;

@@ -1,9 +1,10 @@
+import { PRIMARY_BUTTON_GUTTER, PRIMARY_BUTTON_STYLE, PRIMARY_BUTTON_TEXT_STYLE } from '@/components/common/AppButton';
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import { useIsFocused } from '@react-navigation/native';
 import { router } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ScrollView, View } from 'react-native';
+import { ActivityIndicator, GestureResponderEvent, Modal, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import Animated, {
   FadeInDown,
   Layout,
@@ -18,6 +19,7 @@ import { useDispatch, useSelector } from "react-redux";
 import AddressModalMapPicker from '../../components/AddressModalMapPicker';
 import styled from 'styled-components/native';
 import AddAddressModal, { type AddressLabel } from '../../components/AddAddressModal';
+import { T } from '../../constants/tokens';
 import { useAppLoader } from '../../hooks/useAppLoader';
 import { addressService, UserAddress } from '../../services/addressService';
 import { showAlert } from '../../services/alertService';
@@ -36,6 +38,8 @@ const DEFAULT_MAP_CENTER = {
 };
 
 const TABLES_CACHE_TTL_MS = 30000;
+const MAX_DELIVERY_DISTANCE_KM = 5;
+const ADDRESS_MENU_WIDTH = 200;
 
 const AnimatedTableCell = memo(function AnimatedTableCell({
   item,
@@ -73,6 +77,7 @@ const AnimatedTableCell = memo(function AnimatedTableCell({
         $selected={selected}
         $reserved={item.occupied}
         disabled={item.occupied}
+        activeOpacity={0.8}
         onPress={() => {
           if (item.occupied) return;
           scale.value = withSequence(
@@ -82,16 +87,21 @@ const AnimatedTableCell = memo(function AnimatedTableCell({
           onSelect(item.value);
         }}
       >
+        {selected ? (
+          <CornerCheck>
+            <Ionicons name="checkmark" size={11} color="#fff" />
+          </CornerCheck>
+        ) : null}
         <TableIcon>
           <TableIconSvg
-            color={item.occupied ? '#bbb' : selected ? '#f68712' : '#666'}
+            color={item.occupied ? T.color.faint : selected ? T.color.brand : T.color.inkSoft}
           />
         </TableIcon>
-        <TableLabel $selected={selected} $reserved={item.occupied}>
+        <TableLabel $selected={selected} $reserved={item.occupied} numberOfLines={1}>
           {item.label}
         </TableLabel>
         <TableStatus $reserved={item.occupied}>
-          {item.occupied ? 'Reserved' : selected ? 'Selected' : 'Available'}
+          {item.occupied ? 'Reserved' : selected ? 'Your table' : 'Available'}
         </TableStatus>
       </TableCell>
     </Animated.View>
@@ -109,20 +119,33 @@ const DineInTableSection = memo(function DineInTableSection({
   tableNumber: string;
   onSelectTable: (value: string) => void;
 }) {
+  const freeCount = tableData.filter((table) => !table.occupied).length;
   return (
     <View>
       <Section>
-        <SectionHeader>Choose your table</SectionHeader>
-        <SectionSubtitle>Select the table where you’re seated.</SectionSubtitle>
+        <SectionHeaderRow>
+          <SectionHeader>Choose your table</SectionHeader>
+          {!showSkeleton && tableData.length > 0 ? <SectionHint>{freeCount} of {tableData.length} free</SectionHint> : null}
+        </SectionHeaderRow>
+        <SectionSubtitle>Pick the table you’re seated at.</SectionSubtitle>
         {showSkeleton ? (
-          <TableSkeletonGrid>
-            {Array.from({ length: 8 }).map((_, i) => (
-              <TableSkeletonCell key={i} />
+          <TableGrid>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <View key={i} style={{ width: '33.333%', paddingHorizontal: 5, marginBottom: 10 }}>
+                <TableSkeletonCell />
+              </View>
             ))}
-          </TableSkeletonGrid>
+          </TableGrid>
+        ) : tableData.length === 0 ? (
+          <EmptyStateCard>
+            <EmptyStateIcon>
+              <Ionicons name="grid-outline" size={22} color={T.color.brand} />
+            </EmptyStateIcon>
+            <EmptyStateTitle>No tables listed yet</EmptyStateTitle>
+            <EmptyStateText>Please ask the staff to help you place your order.</EmptyStateText>
+          </EmptyStateCard>
         ) : (
           <TableGrid>
-            {tableData.length === 0 && <SectionSubtitle>No tables available yet. Please ask our staff for help.</SectionSubtitle>}
             {tableData.map((item, index) => (
               <AnimatedTableCell
                 key={item.value}
@@ -134,16 +157,19 @@ const DineInTableSection = memo(function DineInTableSection({
             ))}
           </TableGrid>
         )}
-        <TableInfoBox>
-          <TableInfoIcon>
-            <Ionicons name="information-circle" size={16} color="#f68712" />
-          </TableInfoIcon>
-          <TableInfoText>Can’t find your table? Ask our staff for assistance</TableInfoText>
-        </TableInfoBox>
+        <InfoNote>
+          <Ionicons name="information-circle-outline" size={16} color={T.color.muted} />
+          <InfoNoteText>Can’t find your table? Ask the staff for help.</InfoNoteText>
+        </InfoNote>
       </Section>
     </View>
   );
 });
+
+const ADDRESS_LABEL_ICONS: Record<string, 'home-outline' | 'briefcase-outline' | 'location-outline'> = {
+  Home: 'home-outline',
+  Work: 'briefcase-outline',
+};
 
 const HomeDeliveryAddressSection = memo(function HomeDeliveryAddressSection({
   loadingAddresses,
@@ -156,7 +182,9 @@ const HomeDeliveryAddressSection = memo(function HomeDeliveryAddressSection({
   onSetDefaultAddress,
   onEditAddress,
   onDeleteAddress,
+  addressDistanceKm,
 }: {
+  addressDistanceKm: Record<string, number | null>;
   loadingAddresses: boolean;
   savedAddresses: UserAddress[];
   selectedAddressId: string;
@@ -168,80 +196,167 @@ const HomeDeliveryAddressSection = memo(function HomeDeliveryAddressSection({
   onEditAddress: (address: UserAddress) => void;
   onDeleteAddress: (addressId: string) => void;
 }) {
+  const window = useWindowDimensions();
+  // ⋮ menu for one address, anchored to where it was tapped (full-screen coordinates).
+  const [menu, setMenu] = useState<{ address: UserAddress; top: number; left: number } | null>(null);
+  const openMenu = (address: UserAddress, event: GestureResponderEvent) => {
+    const { pageX, pageY } = event.nativeEvent;
+    const menuHeight = address.isDefault ? 104 : 152;
+    const left = Math.max(12, Math.min(pageX - ADDRESS_MENU_WIDTH + 16, window.width - ADDRESS_MENU_WIDTH - 12));
+    const below = pageY + 14;
+    const top = below + menuHeight > window.height - 24 ? pageY - menuHeight - 14 : below;
+    setMenu({ address, top, left });
+  };
+  const runMenuAction = (action: (address: UserAddress) => void) => {
+    const target = menu?.address;
+    setMenu(null);
+    if (target) action(target);
+  };
+
   // No `entering` mount animation on the outer wrapper (deliberately removed) — this
   // mounts in the same render pass as DineInTableSection's 8 cells unmounting; see the
   // matching note on AnimatedTableCell above for why that combination crashes Fabric.
   return (
     <View>
-      <ContentContainer>
-        <SavedAddressesHeaderRow>
-          <SectionTitle>Deliver to</SectionTitle>
-          <AddNewAddressInlineButton onPress={onOpenAddNewAddress} activeOpacity={0.8}>
-            <AddNewAddressInlineText>Add New</AddNewAddressInlineText>
-          </AddNewAddressInlineButton>
-        </SavedAddressesHeaderRow>
-        {loadingAddresses ? (
-          <MetaText>Loading saved addresses...</MetaText>
+      <Modal visible={Boolean(menu)} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setMenu(null)}>
+        <Pressable style={{ flex: 1 }} onPress={() => setMenu(null)} accessibilityLabel="Close menu">
+          {menu ? (
+            <AddressMenu style={[{ top: menu.top, left: menu.left, width: ADDRESS_MENU_WIDTH }, T.shadow.float]}>
+              {!menu.address.isDefault ? (
+                <AddressMenuItem accessibilityRole="button" onPress={() => runMenuAction((address) => onSetDefaultAddress(address.id))}>
+                  <Ionicons name="star-outline" size={18} color={T.color.inkSoft} />
+                  <AddressMenuText>Set as default</AddressMenuText>
+                </AddressMenuItem>
+              ) : null}
+              <AddressMenuItem accessibilityRole="button" onPress={() => runMenuAction(onEditAddress)}>
+                <Ionicons name="create-outline" size={18} color={T.color.inkSoft} />
+                <AddressMenuText>Edit address</AddressMenuText>
+              </AddressMenuItem>
+              <AddressMenuItem accessibilityRole="button" $last onPress={() => runMenuAction((address) => onDeleteAddress(address.id))}>
+                <Ionicons name="trash-outline" size={18} color={T.color.danger} />
+                <AddressMenuText $danger>Delete address</AddressMenuText>
+              </AddressMenuItem>
+            </AddressMenu>
+          ) : null}
+        </Pressable>
+      </Modal>
+      <Section>
+        <SectionHeaderRow>
+          <SectionHeader>Deliver to</SectionHeader>
+          {savedAddresses.length > 0 ? (
+            <AddNewAddressInlineButton onPress={onOpenAddNewAddress} activeOpacity={0.8} accessibilityRole="button">
+              <Ionicons name="add" size={16} color={T.color.brand} />
+              <AddNewAddressInlineText>Add new</AddNewAddressInlineText>
+            </AddNewAddressInlineButton>
+          ) : null}
+        </SectionHeaderRow>
+        {loadingAddresses && savedAddresses.length === 0 ? (
+          <>
+            <AddressSkeletonCard />
+            <AddressSkeletonCard />
+          </>
         ) : savedAddresses.length > 0 ? (
-          savedAddresses.map((address, addrIndex) => (
-            <Animated.View
-              key={address.id}
-              entering={FadeInDown.delay(addrIndex * 70).springify().damping(16)}
-              layout={Layout.springify()}
-            >
-              <SavedAddressCard
-                activeOpacity={0.7}
-                $selected={selectedAddressId === address.id}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: selectedAddressId === address.id }}
-                onPress={() => onSelectSavedAddress(address)}
+          savedAddresses.map((address, addrIndex) => {
+            const selected = selectedAddressId === address.id;
+            const label = address.label || 'Saved address';
+            return (
+              <Animated.View
+                key={address.id}
+                entering={FadeInDown.delay(addrIndex * 70).springify().damping(16)}
+                layout={Layout.springify()}
               >
-                <SavedAddressTopRow>
-                  <SavedHeaderGroup>
-                    <SavedAddressLabel>{selectedAddressId === address.id ? '✓ ' : ''}{address.label || 'Saved Address'}</SavedAddressLabel>
-                    {address.isDefault ? <DefaultBadgeText>Default</DefaultBadgeText> : null}
-                  </SavedHeaderGroup>
-                  <SavedActionsRow>
-                    {!address.isDefault ? (
-                      <SavedActionButton
-                        activeOpacity={0.7}
-                        disabled={settingDefaultAddressId === address.id}
-                        onPress={() => onSetDefaultAddress(address.id)}
+                <SavedAddressCard
+                  activeOpacity={0.8}
+                  $selected={selected}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`${label}, ${address.addressLine}`}
+                  accessibilityState={{ selected }}
+                  onPress={() => onSelectSavedAddress(address)}
+                >
+                  <SavedAddressMainRow>
+                    <AddressIconCircle $selected={selected}>
+                      <Ionicons
+                        name={ADDRESS_LABEL_ICONS[String(address.label)] || 'location-outline'}
+                        size={18}
+                        color={selected ? T.color.brand : T.color.inkSoft}
+                      />
+                    </AddressIconCircle>
+                    <View style={{ flex: 1 }}>
+                      <SavedHeaderGroup>
+                        <SavedAddressLabel>{label}</SavedAddressLabel>
+                        {address.isDefault ? (
+                          <DefaultBadge>
+                            <DefaultBadgeText>DEFAULT</DefaultBadgeText>
+                          </DefaultBadge>
+                        ) : null}
+                      </SavedHeaderGroup>
+                      <SavedAddressText numberOfLines={2}>{address.addressLine}</SavedAddressText>
+                      {addressDistanceKm[address.id] != null ? (
+                        <DistanceRow>
+                          <Ionicons
+                            name={Number(addressDistanceKm[address.id]) > MAX_DELIVERY_DISTANCE_KM ? 'alert-circle-outline' : 'navigate-outline'}
+                            size={12}
+                            color={Number(addressDistanceKm[address.id]) > MAX_DELIVERY_DISTANCE_KM ? T.color.danger : T.color.muted}
+                          />
+                          <DistanceText $far={Number(addressDistanceKm[address.id]) > MAX_DELIVERY_DISTANCE_KM}>
+                            {Number(addressDistanceKm[address.id]) > MAX_DELIVERY_DISTANCE_KM
+                              ? `${Number(addressDistanceKm[address.id]).toFixed(1)} km away · outside delivery area`
+                              : `${Number(addressDistanceKm[address.id]).toFixed(1)} km from the restaurant`}
+                          </DistanceText>
+                        </DistanceRow>
+                      ) : null}
+                    </View>
+                    <Ionicons
+                      name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={22}
+                      color={selected ? T.color.brand : '#d6d3d1'}
+                    />
+                    {settingDefaultAddressId === address.id || deletingAddressId === address.id ? (
+                      <MoreButton as={View}>
+                        <ActivityIndicator size="small" color={T.color.muted} />
+                      </MoreButton>
+                    ) : (
+                      <MoreButton
+                        accessibilityRole="button"
+                        accessibilityLabel={`More options for ${label}`}
+                        hitSlop={8}
+                        onPress={(event: GestureResponderEvent) => openMenu(address, event)}
                       >
-                        <SavedActionText>{settingDefaultAddressId === address.id ? 'Setting...' : 'Set Default'}</SavedActionText>
-                      </SavedActionButton>
-                    ) : null}
-                    <SavedActionButton activeOpacity={0.7} onPress={() => onEditAddress(address)}>
-                      <SavedActionText>Edit</SavedActionText>
-                    </SavedActionButton>
-                    <SavedActionButton
-                      activeOpacity={0.7}
-                      disabled={deletingAddressId === address.id}
-                      onPress={() => onDeleteAddress(address.id)}
-                    >
-                      <SavedActionText>{deletingAddressId === address.id ? 'Deleting...' : 'Delete'}</SavedActionText>
-                    </SavedActionButton>
-                  </SavedActionsRow>
-                </SavedAddressTopRow>
-                <SavedAddressText numberOfLines={2}>{address.addressLine}</SavedAddressText>
-              </SavedAddressCard>
-            </Animated.View>
-          ))
+                        <Ionicons name="ellipsis-vertical" size={18} color={T.color.inkSoft} />
+                      </MoreButton>
+                    )}
+                  </SavedAddressMainRow>
+                </SavedAddressCard>
+              </Animated.View>
+            );
+          })
         ) : (
-          <MetaText>No saved addresses yet. Add your first address below.</MetaText>
+          <EmptyAddressButton activeOpacity={0.8} onPress={onOpenAddNewAddress} accessibilityRole="button">
+            <EmptyStateIcon>
+              <Ionicons name="location-outline" size={22} color={T.color.brand} />
+            </EmptyStateIcon>
+            <EmptyStateTitle>Where should we deliver?</EmptyStateTitle>
+            <EmptyStateText>Add an address and pin it on the map so the rider finds you easily.</EmptyStateText>
+            <EmptyStateCta>
+              <Ionicons name="add" size={16} color="#fff" />
+              <EmptyStateCtaText>Add address</EmptyStateCtaText>
+            </EmptyStateCta>
+          </EmptyAddressButton>
         )}
-      </ContentContainer>
+      </Section>
     </View>
   );
 });
 
+const ORDER_TYPE_OPTIONS = [
+  { type: OrderType.DINE_IN, title: 'Dine In', desc: 'Eat at the restaurant', icon: 'restaurant-outline' },
+  { type: OrderType.TAKE_AWAY, title: 'Take-Away', desc: 'Pick it up yourself', icon: 'bag-handle-outline' },
+  { type: OrderType.HOME_DELIVERY, title: 'Delivery', desc: 'To your doorstep', icon: 'bicycle-outline' },
+] as const;
+
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 const OrderTypeLocationScreen = () => {
-  // Balanced-accuracy GPS fixes (what the app uses everywhere for speed — see
-  // locationCacheService) routinely drift 100-500m indoors or in a dense area, so a customer
-  // standing at the actual cafe could easily compute as > 500m away and get silently forced
-  // into Home Delivery. This only needs to answer "are they plausibly near enough to dine
-  // in," not draw a precise geofence, so it's set generously above typical GPS error.
   // Balanced-accuracy GPS fixes (what the app uses everywhere for speed — see
   // locationCacheService) routinely drift 100-500m indoors or in a dense area, so a customer
   // standing at the actual cafe could easily compute as > 500m away and get silently forced
@@ -269,6 +384,9 @@ const OrderTypeLocationScreen = () => {
   const [isAddressModalVisible, setIsAddressModalVisible] = useState(false);
   const [savedAddresses, setSavedAddresses] = useState<UserAddress[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState(String(cartState.editingDeliveryAddressId || ''));
+  // True once the customer taps an address (or is editing an order that already has one) —
+  // after that the nearest-address auto-pick below leaves their choice alone.
+  const userChoseAddressRef = useRef(Boolean(cartState.editingDeliveryAddressId));
   const [editingAddressId, setEditingAddressId] = useState('');
   const [loadingAddresses, setLoadingAddresses] = useState(false);
   const [loadingTables, setLoadingTables] = useState(false);
@@ -286,14 +404,6 @@ const OrderTypeLocationScreen = () => {
     takeaway: { available: true, message: '' },
     homeDelivery: { available: true, message: '' },
   });
-  // ── Mount animations ───────────────────────────────────────────────────────
-  const btnScale = useSharedValue(1);
-  const btnAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: btnScale.value }],
-  }));
-
-  // ── End animations ────────────────────────────────────────────────────────
-
   const resolvedRestaurantId = useMemo(() => String(
     (cartItems[0] as any)?.cafeId ||
     (cartItems[0] as any)?.restaurantId ||
@@ -454,7 +564,6 @@ const OrderTypeLocationScreen = () => {
         }
 
         const distKm = getDistanceInKm(finalCafeCoords, loc);
-        console.log("distKm",distKm)
         const distanceMeters = Math.round(distKm * 1000);
         const isNear = distanceMeters <= NEAR_CAFE_DISTANCE_METERS;
 
@@ -536,6 +645,12 @@ const OrderTypeLocationScreen = () => {
     tableNumberRef.current = tableNumber;
   }, [tableNumber]);
 
+  // A table only means something for dine-in — drop it as soon as the customer leaves
+  // dine-in, so coming back starts with no table picked instead of a stale one.
+  useEffect(() => {
+    if (orderType !== OrderType.DINE_IN) setTableNumber('');
+  }, [orderType]);
+
   const defaultMapCenter = DEFAULT_MAP_CENTER;
 
   const loadOccupiedTables = useCallback(async (options?: { force?: boolean }) => {
@@ -581,15 +696,17 @@ const OrderTypeLocationScreen = () => {
     if (!authUser?.uid) {
       setSavedAddresses([]);
       setSelectedAddressId('');
-      return;
+      return null;
     }
 
     try {
       setLoadingAddresses(true);
       const addresses = await addressService.listUserAddresses(authUser.uid);
       setSavedAddresses(addresses);
+      return addresses;
     } catch (error) {
       console.error('Failed to load addresses:', error);
+      return null;
     } finally {
       setLoadingAddresses(false);
     }
@@ -642,28 +759,76 @@ const OrderTypeLocationScreen = () => {
     void loadSavedAddresses();
   }, [orderType, loadSavedAddresses]);
 
+  // Restaurant location is needed to rank saved addresses by distance, even when the
+  // customer's own GPS fix (which the proximity check above relies on) isn't available.
   useEffect(() => {
-    if (orderType !== OrderType.HOME_DELIVERY) {
+    if (orderType !== OrderType.HOME_DELIVERY || restaurantCoords) return;
+    void resolveRestaurantCoordsForRange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType, restaurantCoords, resolvedRestaurantId]);
+
+  const addressDistanceKm = useMemo(() => {
+    const distances: Record<string, number | null> = {};
+    savedAddresses.forEach((address) => {
+      const latitude = Number(address.latitude);
+      const longitude = Number(address.longitude);
+      distances[address.id] = restaurantCoords
+        && address.latitude != null && address.longitude != null
+        && Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? getDistanceInKm(restaurantCoords, { latitude, longitude })
+        : null;
+    });
+    return distances;
+  }, [savedAddresses, restaurantCoords]);
+
+  // The address to pre-select for this restaurant: the nearest saved address within delivery
+  // range. Falls back to the default (or first) when none are in range or the restaurant's
+  // location isn't known yet.
+  const preferredAddress = useMemo(() => {
+    if (savedAddresses.length === 0) return null;
+    const fallback = savedAddresses.find((address) => address.isDefault) || savedAddresses[0];
+    const inRange = savedAddresses
+      .filter((address) => {
+        const distance = addressDistanceKm[address.id];
+        return distance != null && distance <= MAX_DELIVERY_DISTANCE_KM;
+      })
+      .sort((a, b) => Number(addressDistanceKm[a.id]) - Number(addressDistanceKm[b.id]));
+    if (inRange.length === 0) return fallback;
+    return inRange[0];
+  }, [savedAddresses, addressDistanceKm]);
+
+  useEffect(() => {
+    if (orderType !== OrderType.HOME_DELIVERY || isAddressModalVisible || !preferredAddress) {
       return;
     }
 
-    if (isAddressModalVisible) {
+    // Never override an address the customer picked themselves.
+    if (userChoseAddressRef.current && selectedAddressId) {
       return;
     }
 
-    if (selectedAddressId) {
-      return;
+    if (preferredAddress.id !== selectedAddressId) {
+      handleSelectSavedAddress(preferredAddress);
     }
+  }, [orderType, preferredAddress, selectedAddressId, isAddressModalVisible, handleSelectSavedAddress]);
 
-    if (savedAddresses.length > 0) {
-      handleSelectSavedAddress(savedAddresses[0]);
-    }
-  }, [orderType, savedAddresses, selectedAddressId, isAddressModalVisible, handleSelectSavedAddress]);
+  const handleUserSelectAddress = useCallback((address: UserAddress) => {
+    userChoseAddressRef.current = true;
+    handleSelectSavedAddress(address);
+  }, [handleSelectSavedAddress]);
 
   const handleEditAddress = useCallback((address: UserAddress) => {
     setEditingAddressId(address.id);
     setSelectedAddressLabel(address.label === 'Work' ? 'Work' : address.label === 'Other' ? 'Other' : 'Home');
     handleSelectSavedAddress(address);
+    // Split back into the map location and the house/flat field, so the flat number shows in
+    // its own field instead of glued onto the map address. Older addresses only have the
+    // combined line — those open with everything in the location, as before.
+    const mapAddress = String(address.mapAddress || '').trim();
+    if (mapAddress) {
+      setDeliveryAddress(mapAddress);
+      setDeliveryAddressDetails(String(address.details || ''));
+    }
     setIsAddressModalVisible(true);
   }, [handleSelectSavedAddress]);
 
@@ -678,6 +843,10 @@ const OrderTypeLocationScreen = () => {
   }, []);
 
   const handleCloseAddressModal = () => {
+    // Editing split the address into its two parts; closing without saving goes back to the
+    // saved address as it was.
+    const edited = editingAddressId ? savedAddresses.find((address) => address.id === editingAddressId) : undefined;
+    if (edited) handleSelectSavedAddress(edited);
     setEditingAddressId('');
     setIsAddressModalVisible(false);
   };
@@ -702,6 +871,7 @@ const OrderTypeLocationScreen = () => {
               await addressService.deleteUserAddress(authUser.uid, addressId);
 
               if (selectedAddressId === addressId) {
+                userChoseAddressRef.current = false;
                 setSelectedAddressId('');
               }
               if (editingAddressId === addressId) {
@@ -729,14 +899,18 @@ const OrderTypeLocationScreen = () => {
     try {
       setSettingDefaultAddressId(addressId);
       await addressService.setDefaultAddress(authUser.uid, addressId);
-      await loadSavedAddresses();
-      setSelectedAddressId(addressId);
+      const addresses = await loadSavedAddresses();
+      // Select the new default for real (address text + pin), not just its id.
+      const nextDefault = addresses?.find((address) => address.id === addressId);
+      userChoseAddressRef.current = true;
+      if (nextDefault) handleSelectSavedAddress(nextDefault);
+      else setSelectedAddressId(addressId);
     } catch (_) {
       showAlert('Error', 'Unable to set default address right now. Please try again.');
     } finally {
       setSettingDefaultAddressId('');
     }
-  }, [authUser?.uid, loadSavedAddresses]);
+  }, [authUser?.uid, loadSavedAddresses, handleSelectSavedAddress]);
 
   const handleSaveAddress = async () => {
     if (!authUser?.uid) {
@@ -752,9 +926,12 @@ const OrderTypeLocationScreen = () => {
     try {
       setSavingAddress(true);
       const fullDeliveryAddress = buildFullDeliveryAddress();
+      let savedAddressId = editingAddressId;
       if (editingAddressId) {
         await addressService.updateUserAddress(authUser.uid, editingAddressId, {
           addressLine: fullDeliveryAddress || deliveryAddress.trim(),
+          details: deliveryAddressDetails.trim() || null,
+          mapAddress: deliveryAddress.trim(),
           latitude: deliveryPin?.latitude ?? null,
           longitude: deliveryPin?.longitude ?? null,
           label: selectedAddressLabel,
@@ -762,14 +939,22 @@ const OrderTypeLocationScreen = () => {
       } else {
         const savedId = await addressService.addUserAddress(authUser.uid, {
           addressLine: fullDeliveryAddress || deliveryAddress.trim(),
+          details: deliveryAddressDetails.trim() || null,
+          mapAddress: deliveryAddress.trim(),
           latitude: deliveryPin?.latitude ?? null,
           longitude: deliveryPin?.longitude ?? null,
           label: selectedAddressLabel,
         });
+        userChoseAddressRef.current = true;
         setSelectedAddressId(savedId);
+        savedAddressId = savedId;
       }
 
-      await loadSavedAddresses();
+      // Re-select from the fresh list so the selection carries the full saved line (house
+      // details + map address), not just the map part the form was editing.
+      const addresses = await loadSavedAddresses();
+      const savedAddress = addresses?.find((address) => address.id === savedAddressId);
+      if (savedAddress) handleSelectSavedAddress(savedAddress);
       setEditingAddressId('');
       setIsAddressModalVisible(false);
       showAlert('Success', editingAddressId ? 'Address updated successfully.' : 'Address saved successfully.');
@@ -846,8 +1031,8 @@ const OrderTypeLocationScreen = () => {
           console.warn('Skipping delivery distance check: no map pin/saved coordinates available');
         } else {
           const distKm = getDistanceInKm(coordsForRange, coordsToCheck);
-          if (distKm > 5) {
-            showAlert('Out of Delivery Range', `Your delivery location is ${distKm.toFixed(1)}km away. We only deliver within 5km of the cafe.`);
+          if (distKm > MAX_DELIVERY_DISTANCE_KM) {
+            showAlert('Out of Delivery Range', `Your delivery location is ${distKm.toFixed(1)}km away. We only deliver within ${MAX_DELIVERY_DISTANCE_KM}km of the cafe.`);
             return;
           }
         }
@@ -916,401 +1101,369 @@ const OrderTypeLocationScreen = () => {
         ? 'Update Address'
         : 'Save Address';
 
+  const isOrderTypeAvailable: Record<string, boolean> = {
+    [OrderType.DINE_IN]: canDineIn,
+    [OrderType.TAKE_AWAY]: canTakeAway,
+    [OrderType.HOME_DELIVERY]: canHomeDelivery,
+  };
+  const availableOrderTypes = ORDER_TYPE_OPTIONS.filter((option) => isOrderTypeAvailable[option.type]);
+  // A lone option reads better as a compact row than one oversized tile.
+  const isSingleOrderType = availableOrderTypes.length === 1;
+  // Dine-in / take-away disappear when the customer is out of range — say why instead of
+  // leaving them wondering where the options went.
+  const showOutOfRangeHint = isNearCafe === false
+    && canHomeDelivery
+    && (serviceAvailability.dineIn.available || serviceAvailability.takeaway.available);
+
+  const selectedSavedAddress = savedAddresses.find((address) => address.id === selectedAddressId);
+  const selectedTableLabel = tableData.find((table) => table.value === tableNumber)?.label || `Table ${tableNumber}`;
+  const footerSummary: { icon: 'restaurant-outline' | 'bag-handle-outline' | 'location-outline'; title: string; subtitle: string; missing: boolean } =
+    orderType === OrderType.DINE_IN
+      ? tableNumber
+        ? { icon: 'restaurant-outline', title: selectedTableLabel, subtitle: 'Dine in · served at your table', missing: false }
+        : { icon: 'restaurant-outline', title: 'No table selected', subtitle: 'Pick your table above', missing: true }
+      : orderType === OrderType.TAKE_AWAY
+        ? { icon: 'bag-handle-outline', title: 'Pickup from the restaurant', subtitle: 'Collect it at the counter', missing: false }
+        : deliveryAddress.trim()
+          ? { icon: 'location-outline', title: `Delivering to ${selectedSavedAddress?.label || 'this address'}`, subtitle: deliveryAddress, missing: false }
+          : { icon: 'location-outline', title: 'No address selected', subtitle: 'Add or pick a delivery address', missing: true };
+
   return (
     <Container>
-      <PageHeader title="Delivery Details" />
+      <PageHeader title="Order details" />
 
-      <>
-        <ScrollView
-          contentContainerStyle={{ paddingBottom: 160 }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <JourneyHeader>
-            <JourneyStep>STEP 1 OF 2 · DELIVERY DETAILS</JourneyStep>
-            <JourneyTitle>How would you like your order?</JourneyTitle>
-            <SectionSubtitle>A table for you, a quick pickup, or your doorstep.</SectionSubtitle>
-          </JourneyHeader>
-          {/* Order Type Section */}
-          <Section>
-            <SectionHeader>Order type</SectionHeader>
-            {anyServiceAvailable ? (
-              <OrderTypeCardRow>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 24 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <JourneyHeader>
+          <StepBar>
+            <StepSegment $active />
+            <StepSegment />
+          </StepBar>
+          <JourneyStep>STEP 1 OF 2</JourneyStep>
+          <JourneyTitle>How would you like your order?</JourneyTitle>
+          <JourneySubtitle>A table for you, a quick pickup, or your doorstep.</JourneySubtitle>
+        </JourneyHeader>
+
+        {/* Order Type Section */}
+        <Section>
+          {anyServiceAvailable ? (
+            <>
+              <OrderTypeRow accessibilityRole="radiogroup">
                 {/* A service the restaurant has turned off is simply not offered — no greyed-out card. */}
-                {canDineIn && (
-                  <OrderTypeCard
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: orderType === OrderType.DINE_IN }}
-                    $selected={orderType === OrderType.DINE_IN}
-                    onPress={() => handleSelectOrderType(OrderType.DINE_IN)}
-                  >
-                    <OrderTypeIconBox $color="#f68712">
-                      <Ionicons name="restaurant" size={24} color="#f68712" />
-                    </OrderTypeIconBox>
-                    <OrderTypeContent>
-                      <OrderTypeTitleRow>
-                        <OrderTypeTitle $selected={orderType === OrderType.DINE_IN}>Dine In</OrderTypeTitle>
-                      </OrderTypeTitleRow>
-                      <OrderTypeDesc>Enjoy your food at our cafe</OrderTypeDesc>
-                    </OrderTypeContent>
-                    <OrderTypeRadio $selected={orderType === OrderType.DINE_IN}>
-                      {orderType === OrderType.DINE_IN && <OrderTypeRadioDot />}
-                    </OrderTypeRadio>
-                  </OrderTypeCard>
-                )}
-                {canTakeAway && (
-                  <OrderTypeCard
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: orderType === OrderType.TAKE_AWAY }}
-                    $selected={orderType === OrderType.TAKE_AWAY}
-                    onPress={() => handleSelectOrderType(OrderType.TAKE_AWAY)}
-                  >
-                    <OrderTypeIconBox $color="#43b02a">
-                      <Ionicons name="bag" size={24} color="#43b02a" />
-                    </OrderTypeIconBox>
-                    <OrderTypeContent>
-                      <OrderTypeTitleRow>
-                        <OrderTypeTitle $selected={orderType === OrderType.TAKE_AWAY}>Take-Away</OrderTypeTitle>
-                      </OrderTypeTitleRow>
-                      <OrderTypeDesc>Pick up your order from the cafe</OrderTypeDesc>
-                    </OrderTypeContent>
-                    <OrderTypeRadio $selected={orderType === OrderType.TAKE_AWAY}>
-                      {orderType === OrderType.TAKE_AWAY && <OrderTypeRadioDot />}
-                    </OrderTypeRadio>
-                  </OrderTypeCard>
-                )}
-                {canHomeDelivery && (
-                  <OrderTypeCard
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: orderType === OrderType.HOME_DELIVERY }}
-                    $selected={orderType === OrderType.HOME_DELIVERY}
-                    onPress={() => handleSelectOrderType(OrderType.HOME_DELIVERY)}
-                  >
-                    <OrderTypeIconBox $color="#7c3aed">
-                      <Ionicons name="car" size={28} color="#7c3aed" />
-                    </OrderTypeIconBox>
-                    <OrderTypeContent>
-                      <OrderTypeTitleRow>
-                        <OrderTypeTitle $selected={orderType === OrderType.HOME_DELIVERY}>Home Delivery</OrderTypeTitle>
-                      </OrderTypeTitleRow>
-                      <OrderTypeDesc>We’ll deliver it to your doorstep</OrderTypeDesc>
-                    </OrderTypeContent>
-                    <OrderTypeRadio $selected={orderType === OrderType.HOME_DELIVERY}>
-                      {orderType === OrderType.HOME_DELIVERY && <OrderTypeRadioDot />}
-                    </OrderTypeRadio>
-                  </OrderTypeCard>
-                )}
-              </OrderTypeCardRow>
-            ) : (
-              <NoServiceCard>
-                <Ionicons name="alert-circle-outline" size={32} color="#e53935" />
-                <NoServiceTitle>Ordering Is Temporarily Unavailable</NoServiceTitle>
-                <NoServiceDesc>
-                  {serviceAvailability.dineIn.message
-                    || serviceAvailability.takeaway.message
-                    || serviceAvailability.homeDelivery.message
-                    || 'Dine-in, take-away and home delivery are all paused right now. Please check back shortly — you can still browse the menu.'}
-                </NoServiceDesc>
-              </NoServiceCard>
-            )}
-          </Section>
+                {availableOrderTypes.map((option) => {
+                  const selected = orderType === option.type;
+                  return (
+                    <OrderTypeTile
+                      key={option.type}
+                      accessibilityRole="radio"
+                      accessibilityLabel={`${option.title}, ${option.desc}`}
+                      accessibilityState={{ selected }}
+                      $selected={selected}
+                      $single={isSingleOrderType}
+                      activeOpacity={0.8}
+                      onPress={() => handleSelectOrderType(option.type)}
+                    >
+                      {selected ? (
+                        <CornerCheck>
+                          <Ionicons name="checkmark" size={11} color="#fff" />
+                        </CornerCheck>
+                      ) : null}
+                      <OrderTypeIconCircle $selected={selected} $single={isSingleOrderType}>
+                        <Ionicons name={option.icon} size={22} color={selected ? T.color.brand : T.color.inkSoft} />
+                      </OrderTypeIconCircle>
+                      <View style={isSingleOrderType ? { flex: 1 } : { alignItems: 'center' }}>
+                        <OrderTypeTitle $selected={selected} $single={isSingleOrderType}>{option.title}</OrderTypeTitle>
+                        <OrderTypeDesc numberOfLines={2} $single={isSingleOrderType}>{option.desc}</OrderTypeDesc>
+                      </View>
+                    </OrderTypeTile>
+                  );
+                })}
+              </OrderTypeRow>
+              {showOutOfRangeHint ? (
+                <InfoNote>
+                  <Ionicons name="navigate-circle-outline" size={16} color={T.color.muted} />
+                  <InfoNoteText>Dine-in and take-away show up when you’re near the restaurant.</InfoNoteText>
+                </InfoNote>
+              ) : null}
+            </>
+          ) : (
+            <NoServiceCard>
+              <NoServiceIcon>
+                <Ionicons name="pause-circle-outline" size={28} color={T.color.danger} />
+              </NoServiceIcon>
+              <NoServiceTitle>Ordering is paused right now</NoServiceTitle>
+              <NoServiceDesc>
+                {serviceAvailability.dineIn.message
+                  || serviceAvailability.takeaway.message
+                  || serviceAvailability.homeDelivery.message
+                  || 'Dine-in, take-away and home delivery are all paused right now. Please check back shortly — you can still browse the menu.'}
+              </NoServiceDesc>
+            </NoServiceCard>
+          )}
+        </Section>
 
-          {/* Table Selection Section */}
-          {orderType === OrderType.DINE_IN && (
-            <DineInTableSection
-              showSkeleton={shouldShowTableSkeleton}
-              tableData={tableData}
-              tableNumber={tableNumber}
-              onSelectTable={setTableNumber}
-            />
-          )}
-
-          {orderType === OrderType.TAKE_AWAY && (
-            <Section>
-              <PickupCard>
-                <Ionicons name="bag-check-outline" size={24} color="#ee7513" />
-                <View style={{ flex: 1 }}>
-                  <SectionHeader>Freshly made for pickup</SectionHeader>
-                  <SectionSubtitle>Collect your order at the cafe. We’ll keep you updated on its progress.</SectionSubtitle>
-                </View>
-              </PickupCard>
-            </Section>
-          )}
-          {/* Address and Delivery UI for Home Delivery */}
-          {orderType === OrderType.HOME_DELIVERY && (
-            <HomeDeliveryAddressSection
-              loadingAddresses={loadingAddresses}
-              savedAddresses={savedAddresses}
-              selectedAddressId={selectedAddressId}
-              settingDefaultAddressId={settingDefaultAddressId}
-              deletingAddressId={deletingAddressId}
-              onOpenAddNewAddress={handleOpenAddNewAddress}
-              onSelectSavedAddress={handleSelectSavedAddress}
-              onSetDefaultAddress={handleSetDefaultAddress}
-              onEditAddress={handleEditAddress}
-              onDeleteAddress={handleDeleteAddress}
-            />
-          )}
-          <AddAddressModal
-            visible={isAddressModalVisible}
-            editingAddressId={editingAddressId}
-            insetsBottom={insets.bottom}
-            deliveryAddressDetails={deliveryAddressDetails}
-            selectedAddressLabel={selectedAddressLabel}
-            savingAddress={savingAddress}
-            disableSaveAddress={isWaitingForAutoLocation || savingAddress}
-            saveAddressButtonText={saveAddressButtonText}
-            onClose={handleCloseAddressModal}
-            onDeliveryAddressDetailsChange={setDeliveryAddressDetails}
-            onSelectAddressLabel={setSelectedAddressLabel}
-            onSaveAddress={handleSaveAddress}
-            mapPickerSection={(
-              <AddressModalMapPicker
-                visible={isAddressModalVisible}
-                enabled={orderType === OrderType.HOME_DELIVERY}
-                editingAddressId={editingAddressId}
-                defaultMapCenter={defaultMapCenter}
-                restaurantCoords={restaurantCoords}
-                googleMapsApiKey={GOOGLE_MAPS_API_KEY}
-                initialAddressText={deliveryAddress}
-                initialPin={deliveryPin}
-                onAddressChange={handleMapAddressChange}
-                onPinChange={handleMapPinChange}
-                onLoadingChange={handleMapLoadingChange}
-                onClearSelectedAddress={() => setSelectedAddressId('')}
-              />
-            )}
+        {anyServiceAvailable && orderType === OrderType.DINE_IN && (
+          <DineInTableSection
+            showSkeleton={shouldShowTableSkeleton}
+            tableData={tableData}
+            tableNumber={tableNumber}
+            onSelectTable={setTableNumber}
           />
+        )}
 
+        {anyServiceAvailable && orderType === OrderType.TAKE_AWAY && (
+          <Section>
+            <SectionHeader>Pickup</SectionHeader>
+            <PickupCard>
+              <PickupIcon>
+                <Ionicons name="bag-check-outline" size={22} color={T.color.brand} />
+              </PickupIcon>
+              <View style={{ flex: 1 }}>
+                <PickupTitle>Freshly made for pickup</PickupTitle>
+                <PickupText>Collect your order at the counter. You can track its progress from your orders.</PickupText>
+              </View>
+            </PickupCard>
+          </Section>
+        )}
 
+        {anyServiceAvailable && orderType === OrderType.HOME_DELIVERY && (
+          <HomeDeliveryAddressSection
+            loadingAddresses={loadingAddresses}
+            savedAddresses={savedAddresses}
+            selectedAddressId={selectedAddressId}
+            settingDefaultAddressId={settingDefaultAddressId}
+            deletingAddressId={deletingAddressId}
+            onOpenAddNewAddress={handleOpenAddNewAddress}
+            onSelectSavedAddress={handleUserSelectAddress}
+            addressDistanceKm={addressDistanceKm}
+            onSetDefaultAddress={handleSetDefaultAddress}
+            onEditAddress={handleEditAddress}
+            onDeleteAddress={handleDeleteAddress}
+          />
+        )}
+      </ScrollView>
 
-          {/* Manager fields for dine-in orders */}
-        </ScrollView>
-        <ContinueButtonNew
+      <AddAddressModal
+        visible={isAddressModalVisible}
+        editingAddressId={editingAddressId}
+        insetsBottom={insets.bottom}
+        deliveryAddressDetails={deliveryAddressDetails}
+        selectedAddressLabel={selectedAddressLabel}
+        savingAddress={savingAddress}
+        disableSaveAddress={isWaitingForAutoLocation || savingAddress}
+        saveAddressButtonText={saveAddressButtonText}
+        pinnedAddress={deliveryAddress}
+        detectingAddress={loadingDeliveryMap}
+        distanceKm={deliveryPin && restaurantCoords ? getDistanceInKm(restaurantCoords, deliveryPin) : null}
+        maxDeliveryKm={MAX_DELIVERY_DISTANCE_KM}
+        onClose={handleCloseAddressModal}
+        onDeliveryAddressDetailsChange={setDeliveryAddressDetails}
+        onSelectAddressLabel={setSelectedAddressLabel}
+        onSaveAddress={handleSaveAddress}
+        mapPickerSection={(
+          <AddressModalMapPicker
+            visible={isAddressModalVisible}
+            enabled={orderType === OrderType.HOME_DELIVERY}
+            editingAddressId={editingAddressId}
+            defaultMapCenter={defaultMapCenter}
+            restaurantCoords={restaurantCoords}
+            googleMapsApiKey={GOOGLE_MAPS_API_KEY}
+            initialAddressText={deliveryAddress}
+            initialPin={deliveryPin}
+            onAddressChange={handleMapAddressChange}
+            onPinChange={handleMapPinChange}
+            onLoadingChange={handleMapLoadingChange}
+            onClearSelectedAddress={() => setSelectedAddressId('')}
+          />
+        )}
+      />
+
+      <Footer style={{ paddingBottom: insets.bottom + 12 }}>
+        {anyServiceAvailable ? (
+          <FooterSummary>
+            <FooterSummaryIcon $missing={footerSummary.missing}>
+              <Ionicons name={footerSummary.icon} size={16} color={footerSummary.missing ? T.color.muted : T.color.brand} />
+            </FooterSummaryIcon>
+            <View style={{ flex: 1 }}>
+              <FooterSummaryTitle numberOfLines={1}>{footerSummary.title}</FooterSummaryTitle>
+              <FooterSummaryText numberOfLines={1}>{footerSummary.subtitle}</FooterSummaryText>
+            </View>
+          </FooterSummary>
+        ) : null}
+        <ContinueButton
+          accessibilityRole="button"
           onPress={handleContinuePress}
           disabled={isContinueBusy || !anyServiceAvailable}
           style={!anyServiceAvailable ? { opacity: 0.5 } : undefined}
-          // onPressIn={() => {
-          //   btnScale.value = withSpring(0.95, { damping: 15, stiffness: 300 });
-          // }}
-          // onPressOut={() => {
-          //   btnScale.value = withSpring(1, { damping: 10, stiffness: 180 });
-          // }}
-          $bottomInset={insets.bottom}
-          activeOpacity={0.7}
+          activeOpacity={0.8}
         >
-          <Animated.View
-            style={[{ alignItems: 'center', justifyContent: 'center' }, btnAnimStyle]}
-          >
-            <ContinueTextNew>{isContinueBusy ? 'Please wait…' : 'Continue to checkout'}</ContinueTextNew>
-          </Animated.View>
-        </ContinueButtonNew>
-      </>
+          <ContinueText>{isContinueBusy ? 'Please wait…' : 'Continue to checkout'}</ContinueText>
+          {!isContinueBusy ? <Ionicons name="arrow-forward" size={20} color="#fff" /> : null}
+        </ContinueButton>
+      </Footer>
     </Container>
   );
 };
 
 export default OrderTypeLocationScreen;
 
-
-const TableSkeletonGrid = styled.View`
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 10px;
-  margin-bottom: 18px;
-`;
-
-const TableSkeletonCell = styled.View`
-  width: 31%;
-  height: 104px;
-  background-color: #f0f0f0;
-  border-radius: 14px;
-`;
-
-const Container = styled(PageScreen)`
-  flex: 1;
-  background-color: #fffbf7;
-`;
-
-
-
-
-const ContentContainer = styled.View`
-  padding: 20px;
-`;
-
-const SectionTitle = styled.Text`
-  font-size: 17px;
-  color: #181C2E;
-  font-weight: bold;
-`;
-
-const SavedAddressesHeaderRow = styled.View`
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-`;
-
-const MetaText = styled.Text`
-  font-size: 13px;
-  color: #b96521;
-  margin-bottom: 10px;
-  font-weight: 600;
-`;
-
-
 type SelectedProp = { $selected: boolean };
 type ReservedProp = { $reserved: boolean };
 type SelectedReservedProp = { $selected: boolean; $reserved: boolean };
-type ColorProp = { $color: string };
-type BottomInsetProp = { $bottomInset: number };
 
-const SavedAddressCard = styled.TouchableOpacity<SelectedProp>`
-  border-width: 1px;
-  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ddd'};
-  background-color: ${(props: SelectedProp) => props.$selected ? '#fff7ef' : '#fff'};
-  border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 8px;
+const Container = styled(PageScreen)`
+  flex: 1;
+  background-color: ${T.color.canvas};
 `;
 
-const SavedAddressLabel = styled.Text`
-  font-size: 13px;
-  color: #f68712;
-  font-weight: 700;
+// ── Journey header ──────────────────────────────────────────────────────────
+const JourneyHeader = styled.View`
+  padding: 16px 16px 18px;
+`;
+
+const StepBar = styled.View`
+  flex-direction: row;
+  gap: 6px;
+  margin-bottom: 12px;
+`;
+
+const StepSegment = styled.View<{ $active?: boolean }>`
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background-color: ${(props: { $active?: boolean }) => (props.$active ? T.color.brand : T.color.line)};
+`;
+
+const JourneyStep = styled.Text`
+  color: ${T.color.brand};
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+`;
+
+const JourneyTitle = styled.Text`
+  font-size: 22px;
+  font-weight: 800;
+  color: ${T.color.ink};
   margin-bottom: 4px;
 `;
 
-const SavedHeaderGroup = styled.View`
-  flex-direction: row;
-  align-items: center;
-  column-gap: 6px;
+const JourneySubtitle = styled.Text`
+  color: ${T.color.muted};
+  font-size: 13px;
+  line-height: 19px;
 `;
 
-const DefaultBadgeText = styled.Text`
-  font-size: 10px;
-  color: #fff;
-  background-color: #f68712;
-  padding: 3px 6px;
-  border-radius: 10px;
-  overflow: hidden;
-  font-weight: 700;
+// ── Sections ────────────────────────────────────────────────────────────────
+const Section = styled.View`
+  margin: 0 16px 20px;
 `;
 
-const SavedAddressTopRow = styled.View`
-  gap: 8px;
-  flex-wrap: wrap;
+const SectionHeaderRow = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
-`;
-
-const SavedActionsRow = styled.View`
-  flex-direction: row;
-  align-items: center;
-  column-gap: 8px;
-`;
-
-const SavedActionButton = styled.TouchableOpacity`
-  padding: 4px 8px;
-  border-radius: 6px;
-  background-color: #f2f2f2;
-  opacity: ${(props: any) => (props.disabled ? 0.7 : 1)};
-`;
-
-const SavedActionText = styled.Text`
-  font-size: 11px;
-  color: #444;
-  font-weight: 700;
-`;
-
-const SavedAddressText = styled.Text`
-  font-size: 13px;
-  color: #333;
-  line-height: 18px;
-`;
-
-const AddNewAddressInlineButton = styled.TouchableOpacity`
-  border-width: 1px;
-  border-color: #ee7513;
-  border-radius: 999px;
-  min-height: 30px;
-  padding: 6px 12px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: row;
-  background-color: #fff;
-`;
-
-const AddNewAddressInlineText = styled.Text`
-  color: #b96521;
-  font-size: 12px;
-  font-weight: 700;
-`;
-
-
-
-// --- Styled Components for New UI ---
-const Section = styled.View`
-  margin-bottom: 12px;
-  margin-horizontal: 20px;
+  min-height: 32px;
 `;
 
 const SectionHeader = styled.Text`
   font-size: 16px;
-  font-weight: bold;
-  color: #222;
+  font-weight: 800;
+  color: ${T.color.ink};
+  margin-bottom: 8px;
+`;
+
+const SectionHint = styled.Text`
+  font-size: 12px;
+  font-weight: 600;
+  color: ${T.color.muted};
+  margin-bottom: 8px;
+`;
+
+const SectionSubtitle = styled.Text`
+  color: ${T.color.muted};
+  font-size: 12px;
+  line-height: 18px;
   margin-bottom: 10px;
 `;
 
-const OrderTypeCardRow = styled.View`
-  flex-direction: column;
+const InfoNote = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+`;
+
+const InfoNoteText = styled.Text`
+  flex: 1;
+  color: ${T.color.muted};
+  font-size: 12px;
+  line-height: 17px;
+`;
+
+const CornerCheck = styled.View`
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.brand};
+`;
+
+// ── Order type tiles ────────────────────────────────────────────────────────
+const OrderTypeRow = styled.View`
+  flex-direction: row;
   gap: 10px;
   margin-bottom: 8px;
 `;
 
-const OrderTypeCard = styled.TouchableOpacity<SelectedProp>`
-  flex-direction: row;
-  align-items: center;
-  background-color: ${(props: SelectedProp) => props.$selected ? '#fff3e5' : '#fff'};
-  border-width: 1px;
-  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ececec'};
-  border-radius: 16px;
-  padding: 14px 12px;
-`;
+type TileProp = { $selected: boolean; $single?: boolean };
 
-const OrderTypeIconBox = styled.View<ColorProp>`
-  background-color: ${(props: ColorProp) => props.$color + '22'};
-  border-radius: 12px;
-  padding: 10px;
-  margin-right: 14px;
-`;
-
-const OrderTypeContent = styled.View`
+const OrderTypeTile = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<TileProp>`
   flex: 1;
-`;
-
-const OrderTypeTitleRow = styled.View`
-  flex-direction: row;
+  flex-direction: ${(props: TileProp) => (props.$single ? 'row' : 'column')};
+  min-height: ${(props: TileProp) => (props.$single ? 0 : 118)}px;
   align-items: center;
-  margin-bottom: 2px;
+  justify-content: ${(props: TileProp) => (props.$single ? 'flex-start' : 'center')};
+  padding: ${(props: TileProp) => (props.$single ? '14px 40px 14px 14px' : '14px 8px 12px')};
+  border-radius: ${T.radius.lg}px;
+  border-width: 1.5px;
+  border-color: ${(props: TileProp) => (props.$selected ? T.color.brand : T.color.line)};
+  background-color: ${(props: TileProp) => (props.$selected ? T.color.brandSoft : T.color.surface)};
 `;
 
-const OrderTypeTitle = styled.Text<SelectedProp>`
-  font-size: 14px;
-  font-weight: bold;
-  color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#222'};
-  margin-right: 8px;
+const OrderTypeIconCircle = styled.View<TileProp>`
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: ${(props: TileProp) => (props.$single ? 0 : 8)}px;
+  margin-right: ${(props: TileProp) => (props.$single ? 12 : 0)}px;
+  background-color: ${(props: TileProp) => (props.$selected ? '#ffffff' : T.color.canvas)};
 `;
 
+const OrderTypeTitle = styled.Text<TileProp>`
+  font-size: ${(props: TileProp) => (props.$single ? 15 : 14)}px;
+  font-weight: 800;
+  color: ${(props: TileProp) => (props.$selected ? T.color.brand : T.color.ink)};
+  text-align: ${(props: TileProp) => (props.$single ? 'left' : 'center')};
+`;
 
-const OrderTypeDesc = styled.Text`
-  color: #827d79;
-  font-size: 12px;
-  line-height: 17px;
+const OrderTypeDesc = styled.Text<{ $single?: boolean }>`
+  color: ${T.color.muted};
+  font-size: ${(props: { $single?: boolean }) => (props.$single ? 12 : 11)}px;
+  line-height: 15px;
+  margin-top: 2px;
+  text-align: ${(props: { $single?: boolean }) => (props.$single ? 'left' : 'center')};
 `;
 
 const NoServiceCard = styled.View`
@@ -1318,61 +1471,59 @@ const NoServiceCard = styled.View`
   background-color: #fff5f5;
   border-width: 1px;
   border-color: #fecaca;
-  border-radius: 16px;
+  border-radius: ${T.radius.lg}px;
   padding: 24px 18px;
 `;
 
+const NoServiceIcon = styled.View`
+  width: 52px;
+  height: 52px;
+  border-radius: 26px;
+  align-items: center;
+  justify-content: center;
+  background-color: #fee2e2;
+`;
+
 const NoServiceTitle = styled.Text`
-  margin-top: 8px;
+  margin-top: 12px;
   font-size: 16px;
   font-weight: 800;
-  color: #1f1f1f;
+  color: ${T.color.ink};
   text-align: center;
 `;
 
 const NoServiceDesc = styled.Text`
   margin-top: 6px;
   font-size: 13px;
-  color: #6b7280;
+  color: ${T.color.muted};
   text-align: center;
-  line-height: 18px;
+  line-height: 19px;
 `;
 
-const OrderTypeRadio = styled.View<SelectedProp>`
-  width: 22px;
-  height: 22px;
-  border-radius: 11px;
-  border-width: 2px;
-  border-color: ${(props: SelectedProp) => props.$selected ? '#f68712' : '#ddd'};
-  align-items: center;
-  justify-content: center;
-  margin-left: 12px;
-`;
-
-const OrderTypeRadioDot = styled.View`
-  width: 10px;
-  height: 10px;
-  border-radius: 5px;
-  background: #f68712;
-`;
-
+// ── Tables ──────────────────────────────────────────────────────────────────
 const TableGrid = styled.View`
   flex-direction: row;
   flex-wrap: wrap;
-  margin: 10px -5px 8px;
+  margin: 4px -5px 2px;
 `;
 
-const TableCell = styled.TouchableOpacity<SelectedReservedProp>`
+const TableSkeletonCell = styled.View`
+  height: 100px;
+  background-color: #f1ede9;
+  border-radius: ${T.radius.md}px;
+`;
+
+const TableCell = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<SelectedReservedProp>`
   width: 100%;
-  min-height: 104px;
-  background: ${(props: SelectedReservedProp) => props.$reserved ? '#f7f7f7' : props.$selected ? '#fff7ef' : '#fff'};
-  border-width: 1px;
-  border-color: ${(props: SelectedReservedProp) => props.$reserved ? '#ececec' : props.$selected ? '#f68712' : '#ececec'};
-  border-radius: 14px;
+  min-height: 100px;
+  background-color: ${(props: SelectedReservedProp) => props.$reserved ? '#f5f4f3' : props.$selected ? T.color.brandSoft : T.color.surface};
+  border-width: 1.5px;
+  border-color: ${(props: SelectedReservedProp) => props.$selected && !props.$reserved ? T.color.brand : T.color.line};
+  border-radius: ${T.radius.md}px;
   align-items: center;
   justify-content: center;
-  padding: 10px;
-  opacity: ${(props: SelectedReservedProp) => props.$reserved ? 0.7 : 1};
+  padding: 10px 6px;
+  opacity: ${(props: SelectedReservedProp) => props.$reserved ? 0.65 : 1};
 `;
 
 const TableIcon = styled.View`
@@ -1380,67 +1531,296 @@ const TableIcon = styled.View`
 `;
 
 const TableLabel = styled.Text<SelectedReservedProp>`
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: ${(props: SelectedReservedProp) => props.$reserved ? '#bbb' : props.$selected ? '#f68712' : '#222'};
+  font-size: 12px;
+  font-weight: 800;
+  color: ${(props: SelectedReservedProp) => props.$reserved ? T.color.faint : props.$selected ? T.color.brand : T.color.ink};
 `;
 
 const TableStatus = styled.Text<ReservedProp>`
   font-size: 10px;
-  color: ${(props: ReservedProp) => props.$reserved ? '#e67e22' : '#43b02a'};
+  color: ${(props: ReservedProp) => props.$reserved ? T.color.muted : T.color.success};
   margin-top: 2px;
   font-weight: 700;
 `;
 
-const TableInfoBox = styled.View`
-  background: #fff7ef;
-  border-radius: 12px;
-  padding: 14px 12px;
+// ── Pickup ──────────────────────────────────────────────────────────────────
+const PickupCard = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-bottom: 18px;
-  margin-top: 2px;
+  gap: 12px;
+  background-color: ${T.color.surface};
+  border: 1px solid ${T.color.line};
+  border-radius: ${T.radius.lg}px;
+  padding: 16px;
 `;
 
-const TableInfoIcon = styled.View`
-  margin-right: 10px;
-`;
-
-const TableInfoText = styled.Text`
-  flex: 1;
-  color: #996329;
-  line-height: 17px;
-  font-size: 12px;
-  font-weight: 600;
-`;
-
-const ContinueButtonNew = styled.TouchableOpacity<BottomInsetProp>`
-  background-color: #ff8000;
-  padding: 18px;
-  border-radius: 12px;
+const PickupIcon = styled.View`
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
   align-items: center;
+  justify-content: center;
+  background-color: ${T.color.brandSoft};
+`;
+
+const PickupTitle = styled.Text`
+  font-size: 14px;
+  font-weight: 800;
+  color: ${T.color.ink};
+  margin-bottom: 2px;
+`;
+
+const PickupText = styled.Text`
+  font-size: 12px;
+  line-height: 17px;
+  color: ${T.color.muted};
+`;
+
+// ── Saved addresses ─────────────────────────────────────────────────────────
+const AddNewAddressInlineButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  border-radius: ${T.radius.pill}px;
+  background-color: ${T.color.brandSoft};
+`;
+
+const AddNewAddressInlineText = styled.Text`
+  color: ${T.color.brand};
+  font-size: 12px;
+  font-weight: 800;
+`;
+
+const AddressSkeletonCard = styled.View`
+  height: 96px;
+  border-radius: ${T.radius.lg}px;
+  background-color: #f1ede9;
+  margin-bottom: 10px;
+`;
+
+const SavedAddressCard = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<SelectedProp>`
+  border-width: 1.5px;
+  border-color: ${(props: SelectedProp) => props.$selected ? T.color.brand : T.color.line};
+  background-color: ${(props: SelectedProp) => props.$selected ? '#fffaf5' : T.color.surface};
+  border-radius: ${T.radius.lg}px;
+  padding: 14px;
+  margin-bottom: 10px;
+`;
+
+const SavedAddressMainRow = styled.View`
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+`;
+
+const AddressIconCircle = styled.View<SelectedProp>`
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${(props: SelectedProp) => props.$selected ? T.color.brandSoft : T.color.canvas};
+`;
+
+const SavedHeaderGroup = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+`;
+
+const SavedAddressLabel = styled.Text`
+  font-size: 14px;
+  color: ${T.color.ink};
+  font-weight: 800;
+`;
+
+const DefaultBadge = styled.View`
+  padding: 2px 6px;
+  border-radius: ${T.radius.pill}px;
+  background-color: ${T.color.successSoft};
+`;
+
+const DefaultBadgeText = styled.Text`
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: ${T.color.success};
+  font-weight: 800;
+`;
+
+const SavedAddressText = styled.Text`
+  font-size: 12px;
+  color: ${T.color.inkSoft};
+  line-height: 18px;
+`;
+
+const DistanceRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+`;
+
+const DistanceText = styled.Text<{ $far: boolean }>`
+  font-size: 11px;
+  font-weight: 600;
+  color: ${(props: { $far: boolean }) => (props.$far ? T.color.danger : T.color.muted)};
+`;
+
+const MoreButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  width: 32px;
+  height: 32px;
+  margin: -5px -8px 0 0;
+  border-radius: 16px;
+  align-items: center;
+  justify-content: center;
+`;
+
+const AddressMenu = styled.View`
   position: absolute;
-  bottom: ${(props: BottomInsetProp) => Math.max(20, props.$bottomInset + 8)}px;
-  width: 90%;
-  align-self: center;
-  shadow-color: #FF9100;
-  shadow-opacity: 0.15;
-  shadow-radius: 8px;
-  elevation: 2;
+  padding: 4px 0;
+  border-radius: ${T.radius.md}px;
+  border-width: 1px;
+  border-color: ${T.color.line};
+  background-color: ${T.color.surface};
+`;
+
+const AddressMenuItem = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $last?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom-width: ${(props: { $last?: boolean }) => (props.$last ? 0 : 1)}px;
+  border-bottom-color: ${T.color.line};
+`;
+
+const AddressMenuText = styled.Text<{ $danger?: boolean }>`
+  font-size: 14px;
+  font-weight: 600;
+  color: ${(props: { $danger?: boolean }) => (props.$danger ? T.color.danger : T.color.ink)};
+`;
+
+// ── Empty states ────────────────────────────────────────────────────────────
+const EmptyStateCard = styled.View`
+  align-items: center;
+  padding: 22px 18px;
+  border-radius: ${T.radius.lg}px;
+  border-width: 1px;
+  border-color: ${T.color.line};
+  background-color: ${T.color.surface};
+  margin-bottom: 10px;
+`;
+
+const EmptyAddressButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  align-items: center;
+  padding: 24px 18px;
+  border-radius: ${T.radius.lg}px;
+  border-width: 1.5px;
+  border-style: dashed;
+  border-color: ${T.color.brandBorder};
+  background-color: ${T.color.surface};
+`;
+
+const EmptyStateIcon = styled.View`
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.brandSoft};
+  margin-bottom: 10px;
+`;
+
+const EmptyStateTitle = styled.Text`
+  font-size: 15px;
+  font-weight: 800;
+  color: ${T.color.ink};
+  text-align: center;
+`;
+
+const EmptyStateText = styled.Text`
+  font-size: 12px;
+  line-height: 18px;
+  color: ${T.color.muted};
+  text-align: center;
+  margin-top: 4px;
+`;
+
+const EmptyStateCta = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 9px 16px;
+  border-radius: ${T.radius.pill}px;
+  background-color: ${T.color.brand};
+`;
+
+const EmptyStateCtaText = styled.Text`
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+`;
+
+// ── Sticky footer ───────────────────────────────────────────────────────────
+const Footer = styled.View`
+  padding: 12px ${PRIMARY_BUTTON_GUTTER}px 0;
+  background-color: ${T.color.surface};
+  border-top-width: 1px;
+  border-top-color: ${T.color.line};
+`;
+
+const FooterSummary = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+`;
+
+const FooterSummaryIcon = styled.View<{ $missing: boolean }>`
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${(props: { $missing: boolean }) => (props.$missing ? T.color.canvas : T.color.brandSoft)};
+`;
+
+const FooterSummaryTitle = styled.Text`
+  font-size: 13px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const FooterSummaryText = styled.Text`
+  font-size: 12px;
+  color: ${T.color.muted};
+  margin-top: 1px;
+`;
+
+const ContinueButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  padding: 0 ${PRIMARY_BUTTON_STYLE.paddingHorizontal}px;
+  background-color: ${PRIMARY_BUTTON_STYLE.backgroundColor};
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   opacity: ${(props: any) => (props.disabled ? 0.7 : 1)};
 `;
 
-const ContinueTextNew = styled.Text`
-  color: #fff;
-  font-size: 16px;
-  font-weight: bold;
-  letter-spacing: 0.5px;
+const ContinueText = styled.Text`
+  color: ${PRIMARY_BUTTON_TEXT_STYLE.color};
+  font-size: ${PRIMARY_BUTTON_TEXT_STYLE.fontSize}px;
+  font-weight: ${PRIMARY_BUTTON_TEXT_STYLE.fontWeight};
 `;
-// --- End Styled Components ---
 
 const TableIconSvg = ({ color = '#222' }: { color?: string }) => (
-  <Svg width={32} height={32} viewBox="0 0 128 128" fill="none">
+  <Svg width={30} height={30} viewBox="0 0 128 128" fill="none">
     <Path d="M18 28L26 64" stroke={color} strokeWidth={10} strokeLinecap="round" />
     <Path d="M26 64H42" stroke={color} strokeWidth={10} strokeLinecap="round" />
     <Path d="M26 64L16 92" stroke={color} strokeWidth={10} strokeLinecap="round" />
@@ -1454,38 +1834,3 @@ const TableIconSvg = ({ color = '#222' }: { color?: string }) => (
     <Path d="M102 64L112 92" stroke={color} strokeWidth={10} strokeLinecap="round" />
   </Svg>
 );
-
-
-
-
-
-const JourneyHeader = styled.View`
-  padding: 22px 20px 16px;
-`;
-const JourneyStep = styled.Text`
-  color: #bc6a26;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  margin-bottom: 8px;
-`;
-const JourneyTitle = styled.Text`
-  font-size: 22px;
-  font-weight: 800;
-  color: #252a36;
-  margin-bottom: 6px;
-`;
-const SectionSubtitle = styled.Text`
-  color: #8a817b;
-  font-size: 12px;
-  line-height: 18px;
-  margin-bottom: 8px;
-`;
-const PickupCard = styled.View`
-  flex-direction: row;
-  gap: 12px;
-  background-color: #fff;
-  border: 1px solid #eee5dc;
-  border-radius: 16px;
-  padding: 18px;
-`;

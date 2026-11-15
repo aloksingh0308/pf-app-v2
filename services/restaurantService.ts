@@ -22,6 +22,8 @@ export type RestaurantRecord = {
    *  `/public/restaurants` listing (e.g. a cached/older shape) just shows no badge. */
   isSponsored?: boolean;
   isNew?: boolean;
+  /** Home delivery is on and costs ₹0 at any order value — shows the "FREE DELIVERY" tag. */
+  freeDelivery?: boolean;
   /** Delivery ETA range (minutes) from the backend's eta.service.ts — never the underlying
    *  prep-time/kitchen-load inputs, only the display range (Feature 7). */
   eta?: { min: number; max: number; exceedsMax: boolean };
@@ -31,8 +33,13 @@ export type RestaurantRecord = {
   /** Distinct food types this branch currently sells (backend-computed from its live menu) —
    *  powers Home's Pure Veg / Non-Veg filter. Empty = no sellable items right now. */
   menuFoodTypes?: FoodType[];
+  /** Per-day hours (`mon`…`sun`, 24h "HH:mm") as set in the SaaS admin — the cafe details
+   *  page lists the whole week; `openingHours` stays the single "today" line. */
+  operatingHours?: WeeklyHours;
   [key: string]: any;
 };
+
+export type WeeklyHours = Record<string, { isOpen: boolean; open: string; close: string }>;
 
 export type RestaurantFoodFilter = 'ALL' | 'PURE_VEG' | 'NON_VEG';
 
@@ -110,6 +117,9 @@ export const getRestaurantOpeningStatus = (openingHours?: string, now = new Date
       nextOpeningText: null,
       openingTimeText: null,
       closingTimeText: null,
+      minutesUntilClose: null,
+      isClosingSoon: false,
+      closingSoonText: null,
     };
   }
 
@@ -121,6 +131,9 @@ export const getRestaurantOpeningStatus = (openingHours?: string, now = new Date
       nextOpeningText: null,
       openingTimeText: null,
       closingTimeText: null,
+      minutesUntilClose: null,
+      isClosingSoon: false,
+      closingSoonText: null,
     };
   }
 
@@ -194,7 +207,8 @@ export interface BackendDirectoryRestaurant {
   latitude?: number | null;
   longitude?: number | null;
   fssai?: string;
-  operatingHours?: Record<string, { isOpen: boolean; open: string; close: string }>;
+  operatingHours?: WeeklyHours;
+  freeDelivery?: boolean;
   ranking?: {
     position: number;
     isSponsored: boolean;
@@ -204,7 +218,7 @@ export interface BackendDirectoryRestaurant {
   };
 }
 
-function to12Hour(time24: string): string {
+export function to12Hour(time24: string): string {
   const [hourStr, minuteStr] = String(time24 || '').split(':');
   const hour = Number(hourStr);
   const minute = Number(minuteStr) || 0;
@@ -257,10 +271,12 @@ export function mapDirectoryRestaurant(restaurant: BackendDirectoryRestaurant): 
     longitude: restaurant.longitude ?? undefined,
     fssai: restaurant.fssai || undefined,
     openingHours: formatOpeningHours(restaurant.operatingHours),
+    operatingHours: restaurant.operatingHours,
     displayOrder: 0,
     available: true,
     isSponsored: restaurant.ranking?.isSponsored || false,
     isNew: restaurant.ranking?.isNew || false,
+    freeDelivery: restaurant.freeDelivery || false,
     eta: restaurant.ranking?.eta,
     distanceKm: restaurant.ranking?.distanceKm ?? null,
     menuFoodTypes: restaurant.menuFoodTypes || [],
@@ -269,13 +285,22 @@ export function mapDirectoryRestaurant(restaurant: BackendDirectoryRestaurant): 
   };
 }
 
-/** Live customer rating for one restaurant (average of every dish rating it has received —
- *  see the backend's getRatingsByBranch) — for screens opened with a possibly-stale record. */
-export const getRestaurantRating = async (orgSlug: string, branchCode: string): Promise<{ average: number; count: number }> => {
-  const context = await apiClient.get<{ rating?: { average: number; count: number } }>(
+/** Live public info for one restaurant — its customer rating (average of every dish rating
+ *  it has received, see the backend's getRatingsByBranch), FSSAI licence number and weekly
+ *  hours — for screens opened with a possibly-stale record. */
+export const getRestaurantPublicInfo = async (orgSlug: string, branchCode: string): Promise<{
+  rating: { average: number; count: number };
+  fssai: string;
+  operatingHours?: WeeklyHours;
+}> => {
+  const context = await apiClient.get<{ rating?: { average: number; count: number }; fssai?: string | null; operatingHours?: WeeklyHours }>(
     `/public/branch/${encodeURIComponent(orgSlug)}/${encodeURIComponent(branchCode)}`
   );
-  return context.rating || { average: 0, count: 0 };
+  return {
+    rating: context.rating || { average: 0, count: 0 },
+    fssai: String(context.fssai || '').trim(),
+    operatingHours: context.operatingHours,
+  };
 };
 
 /** Replaces the original app's direct read of the Firestore `restaurants` collection —
@@ -294,11 +319,87 @@ export const getRestaurants = async (coords?: { latitude: number; longitude: num
   return restaurants.map(mapDirectoryRestaurant);
 };
 
+export type RestaurantDirectoryPage = {
+  items: RestaurantRecord[];
+  hasMore: boolean;
+  /** Page 1 only: the Recommended / New carousel rows, already food-filtered. */
+  sponsored: RestaurantRecord[];
+  newRestaurants: RestaurantRecord[];
+  /** Restaurants listed before the food filter — 0 means none deliver here at all. */
+  unfilteredTotal: number;
+};
+
+type DirectoryMeta = { unfilteredTotal?: number; sponsored?: BackendDirectoryRestaurant[]; new?: BackendDirectoryRestaurant[]; included?: BackendDirectoryRestaurant[] };
+
+const directoryQuery = (coords?: { latitude: number; longitude: number } | null) =>
+  coords ? `?lat=${coords.latitude}&lng=${coords.longitude}` : '';
+
+/** One page of Home's ranked restaurant list (food filter applied by the API) for its
+ *  infinite scroll. A backend that doesn't page the directory yet returns the whole list —
+ *  then it's filtered and split into the carousels here, as one page. */
+export const getRestaurantsPage = async (
+  coords: { latitude: number; longitude: number } | null | undefined,
+  page: number,
+  food: RestaurantFoodFilter
+): Promise<RestaurantDirectoryPage> => {
+  const base = `/public/restaurants${directoryQuery(coords)}`;
+  const path = food === 'ALL' ? base : `${base}${base.includes('?') ? '&' : '?'}food=${food}`;
+  const result = await apiClient.getPage<BackendDirectoryRestaurant>(path, page, 10);
+  const listed = (rows: BackendDirectoryRestaurant[]) => rows.map(mapDirectoryRestaurant).filter((row) => row.available !== false);
+  if (!result.meta) {
+    const all = listed(result.items);
+    const matches = all.filter((row) => matchesRestaurantFoodFilter(row, food));
+    return {
+      items: matches,
+      hasMore: false,
+      sponsored: matches.filter((row) => row.isSponsored),
+      newRestaurants: matches.filter((row) => row.isNew),
+      unfilteredTotal: all.length,
+    };
+  }
+  const meta = result.meta as typeof result.meta & DirectoryMeta;
+  return {
+    items: listed(result.items),
+    hasMore: result.hasMore,
+    sponsored: listed(meta.sponsored || []),
+    newRestaurants: listed(meta.new || []),
+    unfilteredTotal: Number(meta.unfilteredTotal ?? result.meta.total),
+  };
+};
+
+/** Directory rows for specific branches (Home's Order Again), in the directory's shape —
+ *  branches that aren't listed right now are simply missing. */
+export const getRestaurantsByIds = async (ids: string[], coords?: { latitude: number; longitude: number } | null): Promise<RestaurantRecord[]> => {
+  const wanted = [...new Set(ids.filter(Boolean))].slice(0, 20);
+  if (wanted.length === 0) return [];
+  const base = `/public/restaurants${directoryQuery(coords)}`;
+  const result = await apiClient.getPage<BackendDirectoryRestaurant>(`${base}${base.includes('?') ? '&' : '?'}include=${wanted.join(',')}`, 1, 1);
+  const rows = result.meta ? (result.meta as typeof result.meta & DirectoryMeta).included || [] : result.items.filter((row) => wanted.includes(row.id));
+  return rows.map(mapDirectoryRestaurant).filter((row) => row.available !== false);
+};
+
+/** findRestaurantByAnyId downloads the whole directory to find one restaurant, and checkout /
+ *  location / tracking each call it several times — reuse a recent copy (live paused/closed
+ *  status comes from the branch status endpoint, never from here). */
+const DIRECTORY_LOOKUP_CACHE_MS = 60_000;
+let directoryLookup: { at: number; restaurants: Promise<RestaurantRecord[]> } | null = null;
+
 export const findRestaurantByAnyId = async (rawId: unknown): Promise<RestaurantRecord | null> => {
   const normalizedId = normalizeKey(rawId);
   if (!normalizedId) return null;
 
-  const restaurants = await getRestaurants();
+  if (!directoryLookup || Date.now() - directoryLookup.at > DIRECTORY_LOOKUP_CACHE_MS) {
+    const lookup = { at: Date.now(), restaurants: getRestaurants() };
+    directoryLookup = lookup;
+    // A failed fetch must not be served from cache.
+    lookup.restaurants.catch(() => { if (directoryLookup === lookup) directoryLookup = null; });
+  }
+  let restaurants = await directoryLookup.restaurants;
+  // Not in the cached copy (e.g. listed in the last minute) — check a fresh one before giving up.
+  if (!restaurants.some((restaurant) => getRestaurantKeys(restaurant).has(normalizedId)) && Date.now() - directoryLookup.at > 2_000) {
+    directoryLookup = { at: Date.now(), restaurants: getRestaurants() };
+    restaurants = await directoryLookup.restaurants;
+  }
   return restaurants.find((restaurant) => getRestaurantKeys(restaurant).has(normalizedId)) || null;
 };
 

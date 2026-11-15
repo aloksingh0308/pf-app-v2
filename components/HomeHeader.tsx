@@ -10,6 +10,7 @@ import styled from "styled-components/native";
 import { AppDispatch, RootState } from "../store";
 import { moderateScale, scaleFont } from "@/utils/responsive";
 import ChangeLocationModal from './ChangeLocationModal';
+import { T } from '@/constants/tokens';
 
 const HomeHeader = () => {
   const dispatch = useDispatch<AppDispatch>();
@@ -78,13 +79,13 @@ const HomeHeader = () => {
                 <LogoContainer disabled>
                     <LogoImage source={require('../assets/images/pf_logo_circle.png')} resizeMode="contain" accessibilityLabel="Prayagi Foodwala" />
                 </LogoContainer>
-                <LocationContainer activeOpacity={0.7} onPress={() => setIsChangeLocationVisible(true)}>
-                  <Ionicons name="location-sharp" size={moderateScale(16)} color={AppColors.primary} />
+                <LocationContainer activeOpacity={0.8} onPress={() => setIsChangeLocationVisible(true)}>
+                  <Ionicons name="location-sharp" size={moderateScale(16)} color={T.color.brand} />
                   <LocationTextWrap>
                     <LocationLabel numberOfLines={1}>Delivering to</LocationLabel>
                     <HeaderTitle numberOfLines={1}>{currentLocation}</HeaderTitle>
                   </LocationTextWrap>
-                  <Ionicons name="chevron-down" size={moderateScale(18)} color={AppColors.primary} />
+                  <Ionicons name="chevron-down" size={moderateScale(18)} color={T.color.brand} />
                 </LocationContainer>
             <ProfileImageContainer onPress={() => router.push('/user/profile' as never)}>
               <ProfileImage source={{ uri: user?.profileImage ?? AppContent.images.defaultProfile }} />
@@ -107,7 +108,7 @@ const HeaderContainer = styled.View`
 const HeaderTitle = styled.Text`
   font-size: ${scaleFont(12)}px;
   font-weight: 700;
-  color: ${AppColors.textPrimary};
+  color: ${T.color.ink};
 `;
 
 const LocationLabel = styled.Text`
@@ -122,7 +123,7 @@ const LocationTextWrap = styled.View`
   padding-right: ${moderateScale(4)}px;
 `;
 
-const LocationContainer = styled.TouchableOpacity`
+const LocationContainer = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
   margin: 0 ${moderateScale(10)}px;
   min-height: 52px;
@@ -133,7 +134,7 @@ const LocationContainer = styled.TouchableOpacity`
   align-items: center;
 `;
 
-const LogoContainer = styled.TouchableOpacity`
+const LogoContainer = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: ${moderateScale(48)}px;
   height: ${moderateScale(48)}px;
   justify-content: center;
@@ -154,12 +155,12 @@ const LeftSectionContainer = styled.View`
     width: 100%;
 `;
 
-const ProfileImageContainer = styled.TouchableOpacity`
+const ProfileImageContainer = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: ${moderateScale(42)}px;
   height: ${moderateScale(42)}px;
   border-radius: ${moderateScale(24)}px;
   overflow: hidden;
-  background-color: ${AppColors.primary};
+  background-color: ${T.color.brand};
 `;
 
 const ProfileImage = styled.Image`

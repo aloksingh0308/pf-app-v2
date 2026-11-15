@@ -1,78 +1,66 @@
+import { ListRow, Palette, SectionCard, SectionTitle } from '@/components/common/ListSection';
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
-import { AppColors } from '@/constants/appColors';
+import { showAlert } from '@/services/alertService';
+import Ionicons from '@react-native-vector-icons/ionicons';
 import React from 'react';
-import styled from 'styled-components/native';
+import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+const SUPPORT_PHONE = '8957246131';
+const SUPPORT_EMAIL = 'prayagraj.alok@gmail.com';
+
+/** Opens the dialer / mail app; devices without one (tablets, emulators) get the raw value. */
+const openLink = (url: string, fallback: string) => {
+  Linking.openURL(url).catch(() => showAlert('Contact support', fallback));
+};
 
 export default function SupportScreen() {
   return (
-    <Container>
+    <PageScreen style={styles.page}>
       <PageHeader title="Customer Support" />
 
-      <Content>
-        <SectionTitle>Raise Your Concern</SectionTitle>
-        <Paragraph>
-          If you are facing any issue with orders, payments, or account details, contact our support team using the details below.
-        </Paragraph>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}>
+            <Ionicons name="headset-outline" size={28} color={Palette.primary} />
+          </View>
+          <Text style={styles.heroTitle}>How can we help?</Text>
+          <Text style={styles.heroText}>
+            Facing an issue with an order, a payment or your account? Reach our support team below.
+          </Text>
+        </View>
 
-        <Card>
-          <CardLabel>Mobile Number</CardLabel>
-          <CardValue>8957246131</CardValue>
-        </Card>
-
-        <Card>
-          <CardLabel>Email</CardLabel>
-          <CardValue>prayagraj.alok@gmail.com</CardValue>
-        </Card>
-      </Content>
-    </Container>
+        <SectionTitle>Contact us</SectionTitle>
+        <SectionCard>
+          <ListRow
+            icon="call-outline"
+            title="Call support"
+            subtitle={SUPPORT_PHONE}
+            onPress={() => openLink(`tel:${SUPPORT_PHONE}`, SUPPORT_PHONE)}
+          />
+          <ListRow
+            icon="mail-outline"
+            title="Email support"
+            subtitle={SUPPORT_EMAIL}
+            onPress={() => openLink(`mailto:${SUPPORT_EMAIL}`, SUPPORT_EMAIL)}
+          />
+        </SectionCard>
+      </ScrollView>
+    </PageScreen>
   );
 }
 
-const Container = styled(PageScreen)`
-  flex: 1;
-  background-color: ${AppColors.background};
-`;
-
-
-
-
-
-const Content = styled.ScrollView`
-  flex: 1;
-  padding: 20px;
-`;
-
-const SectionTitle = styled.Text`
-  font-size: 16px;
-  font-weight: 700;
-  color: ${AppColors.textPrimary};
-  margin-bottom: 8px;
-`;
-
-const Paragraph = styled.Text`
-  font-size: 14px;
-  color: ${AppColors.textSecondary};
-  line-height: 22px;
-  margin-bottom: 16px;
-`;
-
-const Card = styled.View`
-  border-width: 1px;
-  border-color: ${AppColors.border};
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
-  background-color: ${AppColors.white};
-`;
-
-const CardLabel = styled.Text`
-  font-size: 13px;
-  color: ${AppColors.textSecondary};
-  margin-bottom: 6px;
-`;
-
-const CardValue = styled.Text`
-  font-size: 16px;
-  color: ${AppColors.textPrimary};
-  font-weight: 700;
-`;
+const styles = StyleSheet.create({
+  page: { flex: 1, backgroundColor: Palette.page },
+  content: { padding: 16, paddingBottom: 40 },
+  hero: {
+    alignItems: 'center',
+    backgroundColor: Palette.card,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Palette.hairline,
+  },
+  heroIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: Palette.primarySoft, alignItems: 'center', justifyContent: 'center' },
+  heroTitle: { marginTop: 12, fontSize: 18, fontWeight: '800', color: Palette.text },
+  heroText: { marginTop: 6, fontSize: 14, lineHeight: 20, color: Palette.textSecondary, textAlign: 'center' },
+});

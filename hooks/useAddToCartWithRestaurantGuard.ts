@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useStore } from 'react-redux';
 import { RootState } from '@/store';
 import { addToCart, clearCart } from '@/store/slices/cartSlice';
 import { hasCartRestaurantConflict } from '@/utils/cartRestaurantGuard';
@@ -15,11 +15,13 @@ import { track } from '@/services/analytics';
  */
 export function useAddToCartWithRestaurantGuard() {
   const dispatch = useDispatch();
-  const cartItems = useSelector((state: RootState) => state.cart.items);
+  // Read the cart when adding, not via a subscription — every ProductCard uses this hook,
+  // and subscribing re-rendered the whole visible menu on each cart change.
+  const store = useStore<RootState>();
 
   const addItem = useCallback(
     (item: any, restaurantNames?: { current?: string; next?: string }) => {
-      if (!hasCartRestaurantConflict(cartItems, item)) {
+      if (!hasCartRestaurantConflict(store.getState().cart.items, item)) {
         dispatch(addToCart(item));
         track('add_to_cart', { item_name: item?.name, value: Number(item?.price) || 0, currency: 'INR' });
         return true;
@@ -45,13 +47,14 @@ export function useAddToCartWithRestaurantGuard() {
       );
       return false;
     },
-    [cartItems, dispatch]
+    [store, dispatch]
   );
 
   const addItems = useCallback(
     (items: any[], restaurantNames?: { current?: string; next?: string }) => {
       if (!items || items.length === 0) return true;
 
+      const cartItems = store.getState().cart.items;
       const conflicting = items.find((item) => hasCartRestaurantConflict(cartItems, item));
       if (!conflicting) {
         items.forEach((item) => dispatch(addToCart(item)));
@@ -79,7 +82,7 @@ export function useAddToCartWithRestaurantGuard() {
       );
       return false;
     },
-    [cartItems, dispatch]
+    [store, dispatch]
   );
 
   return { addItem, addItems };

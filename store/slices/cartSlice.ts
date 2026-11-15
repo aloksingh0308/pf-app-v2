@@ -150,14 +150,25 @@ const cartSlice = createSlice({
     },
     decrementQuantity: (state, action: PayloadAction<string>) => {
       const item = state.items.find(item => getCartItemKey(item) === action.payload);
-      if (item && item.quantity > 1) {
-        if (item.isDeal && String(item.dealId || '').trim()) {
-          applyDealBundleDelta(state, String(item.dealId || '').trim(), -1);
+      if (!item) return;
+      const dealId = item.isDeal ? String(item.dealId || '').trim() : '';
+      if (dealId) {
+        // The last bundle of a combo goes out whole — every row of the deal together.
+        const dealItems = state.items.filter((entry) => entry.isDeal && String(entry.dealId || '').trim() === dealId);
+        if (getDealUnitMap(dealItems).bundleQuantity <= 1) {
+          state.items = state.items.filter((entry) => !(entry.isDeal && String(entry.dealId || '').trim() === dealId));
           return;
         }
-
-        item.quantity -= 1;
+        applyDealBundleDelta(state, dealId, -1);
+        return;
       }
+
+      // Minus at 1 takes the item out of the cart, as every menu/details stepper expects.
+      if (item.quantity <= 1) {
+        state.items = state.items.filter((entry) => getCartItemKey(entry) !== action.payload);
+        return;
+      }
+      item.quantity -= 1;
     },
     clearCart: state => {
       state.items = [];

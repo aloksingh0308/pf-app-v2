@@ -1,7 +1,6 @@
 import React from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AppColors } from '@/constants/appColors';
 
 // app/navigation/AppNavigator.tsx
 import { store } from '@/store';
@@ -14,6 +13,7 @@ import HomeScreen from './index';
 import BestDealsScreen from './best-deals';
 import MoreScreen from './more';
 import OrdersScreen from './orders';
+import { T } from '@/constants/tokens';
 
 export type RootStackParamList = {
   Home: undefined;
@@ -46,10 +46,10 @@ export default function TabLayout() {
           screenOptions={({ route }) => ({
             headerShown: false,
             tabBarShowIcon: true,
-            tabBarActiveTintColor: '#ff6b00',
+            tabBarActiveTintColor: T.color.brand,
             tabBarStyle: { backgroundColor: '#fff', borderTopColor: '#f0e6de', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 10, height: 64 + Math.max(insets.bottom, 12), paddingBottom: Math.max(insets.bottom, 12) },
             tabBarLabelStyle: { fontSize: 12, fontWeight: '600', marginTop: 3 },
-            tabBarInactiveTintColor: AppColors.textMuted,
+            tabBarInactiveTintColor: T.color.muted,
             tabBarLabelPosition: 'below-icon',
             tabBarIcon: ({ color, size, focused }) => {
               const outline = TAB_ICON_BY_ROUTE[route.name] ?? 'ellipse-outline';

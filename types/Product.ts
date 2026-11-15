@@ -55,6 +55,10 @@ export interface Product {
   couponExcluded?: boolean;
   cafeId?: string | null;
   restaurantId?: string | null;
+  /** The restaurant (organization slug + branch code) this item was loaded from — lets the
+   *  cart be mirrored to the server for abandoned-cart reminders (services/cartSyncService). */
+  orgSlug?: string | null;
+  branchCode?: string | null;
   emoji: string | null;
   /** Veg / non-veg marker from the backend menu item — absent on older cached cart items. */
   foodType?: FoodType;

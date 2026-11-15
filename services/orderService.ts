@@ -1,6 +1,6 @@
 import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { OrderType } from "../types/enums";
-import { apiClient } from "../utils/apiClient";
+import { ApiError, apiClient } from "../utils/apiClient";
 import { getActiveOrgSlug, getActiveBranchCode } from "./restaurantContext";
 import type { CheckoutPayment } from './paymentService';
 
@@ -30,6 +30,10 @@ export interface OrderItem {
 }
 
 export interface OrderPricing {
+    /** Menu prices include GST: subtotal/discount are as charged, `tax` is inside them. */
+    taxIncluded?: boolean;
+    /** Value the GST is on (item total after discounts, GST excluded). */
+    taxable?: number;
     subtotal: number;
     discount: number;
     packagingCharge: number;
@@ -310,7 +314,7 @@ export async function placeOrder(
         const tables = await fetchBranchTables();
         const table = tables.find((t) => t.name === String(tableNumber || ''));
         if (!table) throw new Error(`Table "${tableNumber}" was not found.`);
-        const order = await apiClient.post<BackendOrder>(`/public/tables/${table.qrToken}/order`, {
+        const order = await apiClient.postIdempotent<BackendOrder>(`/public/tables/${table.qrToken}/order`, {
             items: posItems,
             customerName,
             customerPhone: mobileNumber,
@@ -322,7 +326,7 @@ export async function placeOrder(
         return { orderId: order._id, payment: null };
     }
 
-    const order = await apiClient.post<BackendOrder>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/orders`, {
+    const order = await apiClient.postIdempotent<BackendOrder>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/orders`, {
         orderType: isTakeAwayOrder ? "TAKEAWAY" : "HOME_DELIVERY",
         deliveryAddress: isHomeDeliveryOrder ? deliveryAddress : undefined,
         // The pinned drop location — shown on the customer's live tracking map.
@@ -377,6 +381,11 @@ interface BackendOrder {
         total: number;
         walletPayment?: number;
         coinDiscount?: number;
+        /** Menu prices include GST — subtotal/discounts above are taxable values; the
+         *  amounts as charged are grossItemTotal/grossDiscounts (see pricingView). */
+        taxInclusive?: boolean;
+        grossItemTotal?: number;
+        grossDiscounts?: { restaurantCouponDiscount: number; platformCouponDiscount: number; coinDiscount: number };
     };
     /** What's been paid so far (wallet at checkout, then cash/UPI on delivery). */
     amountPaid?: number;
@@ -492,20 +501,7 @@ function mapBackendOrder(order: BackendOrder): Order {
         mobileNumber: order.customerPhone || "",
         createdAt: order.createdAt as unknown as Timestamp,
         cancellableUntil: order.cancellableUntil || null,
-        pricing: {
-            subtotal: order.pricing.subtotal,
-            discount: order.pricing.discountAmount,
-            couponCode: order.pricing.couponCode || null,
-            tax: order.pricing.taxAmount,
-            serviceCharge: order.pricing.serviceChargeAmount ?? 0,
-            roundOff: order.pricing.roundOffAmount ?? 0,
-            packagingCharge: order.pricing.packagingChargeAmount,
-            deliveryFee: order.pricing.deliveryChargeAmount,
-            // Wallet money is a PAYMENT towards `total` (not a discount), so it's shown as
-            // "paid", and `amountDue` is what's left to pay on delivery.
-            walletUsed: order.pricing.walletPayment ?? 0,
-            coinDiscount: order.pricing.coinDiscount ?? 0,
-        },
+        pricing: pricingView(order.pricing),
         amountPaid: order.amountPaid ?? 0,
         amountDue: order.paymentStatus === "PAID" ? 0 : Math.max(0, Math.round((order.pricing.total - (order.amountPaid ?? 0)) * 100) / 100),
         paymentStatus: order.paymentStatus ?? "UNPAID",
@@ -589,6 +585,26 @@ export async function getMyOrders(): Promise<(Order & { id: string })[]> {
     return orders.map((order) => ({ id: order._id, ...mapBackendOrder(order) }));
 }
 
+/** Backends from before 2026-11-01 don't serve the single-order route — once a 404 turns out
+ *  to be that (the order IS in the list), stop asking for the rest of the session. */
+let singleOrderRouteMissing = false;
+
+/** One of the customer's orders (same shape as a `getMyOrders` row), or null if it isn't
+ *  theirs. Tracking/details screens poll this — the full list is ~50 orders per tick. */
+export async function getMyOrder(orderId: string): Promise<(Order & { id: string }) | null> {
+    if (!singleOrderRouteMissing) {
+        try {
+            const order = await apiClient.get<BackendOrder>(`/public/customers/me/orders/${encodeURIComponent(orderId)}`);
+            return { id: order._id, ...mapBackendOrder(order) };
+        } catch (error) {
+            if (!(error instanceof ApiError && error.status === 404)) throw error;
+        }
+    }
+    const match = (await getMyOrders()).find((order) => order.id === orderId) || null;
+    if (match) singleOrderRouteMissing = true;
+    return match;
+}
+
 export const ORDER_HISTORY_PAGE_SIZE = 15;
 
 /** One page of the customer's order history, newest first. Pass the previous page's
@@ -606,4 +622,41 @@ export async function getMyOrdersPage(before?: string | null, limit = ORDER_HIST
 export async function getOrderStatus(orderId: string): Promise<Order & { _id: string }> {
     const order = await apiClient.get<BackendOrder>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/orders/${orderId}`);
     return { ...mapBackendOrder(order), _id: order._id };
+}
+
+/**
+ * The bill as the customer was charged. When the restaurant's menu prices include GST the
+ * order's subtotal/discounts are taxable values (GST taken out), so show the menu-price item
+ * total and the discounts as given instead, with the GST marked as included, not added.
+ */
+function pricingView(p: BackendOrder["pricing"]) {
+    // Wallet money is a PAYMENT towards `total` (not a discount), so it's shown as
+    // "paid", and `amountDue` is what's left to pay on delivery.
+    const view = {
+        subtotal: p.subtotal,
+        discount: p.discountAmount,
+        couponCode: p.couponCode || null,
+        tax: p.taxAmount,
+        serviceCharge: p.serviceChargeAmount ?? 0,
+        roundOff: p.roundOffAmount ?? 0,
+        packagingCharge: p.packagingChargeAmount,
+        deliveryFee: p.deliveryChargeAmount,
+        walletUsed: p.walletPayment ?? 0,
+        coinDiscount: p.coinDiscount ?? 0,
+        taxIncluded: false,
+        taxable: Math.round((p.subtotal - p.discountAmount) * 100) / 100,
+    };
+    if (!p.taxInclusive) return view;
+    const g = p.grossDiscounts || { restaurantCouponDiscount: 0, platformCouponDiscount: 0, coinDiscount: 0 };
+    const discount = Math.round((g.restaurantCouponDiscount + g.platformCouponDiscount + g.coinDiscount) * 100) / 100;
+    const itemTotal = p.grossItemTotal ?? p.subtotal + p.taxAmount;
+    const charges = view.serviceCharge + view.packagingCharge + view.deliveryFee;
+    return {
+        ...view,
+        subtotal: itemTotal,
+        discount,
+        coinDiscount: g.coinDiscount,
+        roundOff: Math.round((p.total - (itemTotal - discount + charges)) * 100) / 100,
+        taxIncluded: true,
+    };
 }

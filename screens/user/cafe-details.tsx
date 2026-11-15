@@ -1,3 +1,4 @@
+import { PRIMARY_BUTTON_STYLE } from '@/components/common/AppButton';
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import { RootState } from '@/store';
 import { extractCoordinates, getDistanceInKm } from '@/utils/locationUtils';
@@ -11,7 +12,8 @@ import styled from 'styled-components/native';
 import { setActiveRestaurant, setPendingOffer } from '../../services/restaurantContext';
 import type { OfferRecord } from '../../services/offersService';
 import { formatOfferHeadline } from '../../services/offersService';
-import { getRestaurantRating } from '../../services/restaurantService';
+import { getRestaurantOpeningStatus, getRestaurantPublicInfo, to12Hour, type WeeklyHours } from '../../services/restaurantService';
+import { T } from '@/constants/tokens';
 import RestaurantPausedBanner from '@/components/RestaurantPausedBanner';
 
 type Restaurant = {
@@ -24,6 +26,8 @@ type Restaurant = {
   cuisine?: string;
   address?: string;
   openingHours?: string;
+  operatingHours?: WeeklyHours;
+  fssai?: string;
   phone?: string;
   image?: string;
   coverImage?: string;
@@ -54,6 +58,15 @@ const FALLBACK_CAFE_IMAGE = 'https://images.unsplash.com/photo-1550547660-d9450f
 const DEFAULT_ADDRESS = 'Address not available';
 const DEFAULT_PHONE = '+911234567890';
 const DEFAULT_OPENING_HOURS = '10:30 AM - 10:30 PM';
+const WEEK_DAYS = [
+  { key: 'mon', label: 'Monday' },
+  { key: 'tue', label: 'Tuesday' },
+  { key: 'wed', label: 'Wednesday' },
+  { key: 'thu', label: 'Thursday' },
+  { key: 'fri', label: 'Friday' },
+  { key: 'sat', label: 'Saturday' },
+  { key: 'sun', label: 'Sunday' },
+] as const;
 
 export default function CafeDetailsScreen() {
   const insets = useSafeAreaInsets();
@@ -61,6 +74,8 @@ export default function CafeDetailsScreen() {
   const userCoords = useSelector((state: RootState) => state.location);
   const [rating, setRating] = useState(0);
   const [ratingCount, setRatingCount] = useState(0);
+  const [fssai, setFssai] = useState('');
+  const [weeklyHours, setWeeklyHours] = useState<WeeklyHours | null>(null);
 
   const parsedRestaurant = useMemo(() => {
     try {
@@ -93,15 +108,19 @@ export default function CafeDetailsScreen() {
     // imported dish reviews), so it's in sync however this screen was opened.
     setRating(Number(parsedRestaurant?.rating || 0));
     setRatingCount(Number(parsedRestaurant?.ratingCount || 0));
+    setFssai(String(parsedRestaurant?.fssai || '').trim());
+    setWeeklyHours(parsedRestaurant?.operatingHours || null);
     if (!parsedRestaurant?.orgSlug || !parsedRestaurant?.branchCode) return;
     let active = true;
-    getRestaurantRating(parsedRestaurant.orgSlug, parsedRestaurant.branchCode)
+    getRestaurantPublicInfo(parsedRestaurant.orgSlug, parsedRestaurant.branchCode)
       .then((live) => {
         if (!active) return;
-        setRating(live.average);
-        setRatingCount(live.count);
+        setRating(live.rating.average);
+        setRatingCount(live.rating.count);
+        if (live.fssai) setFssai(live.fssai);
+        if (live.operatingHours) setWeeklyHours(live.operatingHours);
       })
-      .catch((error) => console.warn('Failed to refresh restaurant rating.', error));
+      .catch((error) => console.warn('Failed to refresh restaurant details.', error));
     return () => {
       active = false;
     };
@@ -112,6 +131,8 @@ export default function CafeDetailsScreen() {
   const cafeAddress = String(parsedRestaurant?.address || DEFAULT_ADDRESS).trim() || DEFAULT_ADDRESS;
   const cafePhone = String(parsedRestaurant?.phone || DEFAULT_PHONE).trim() || DEFAULT_PHONE;
   const cafeHours = String(parsedRestaurant?.openingHours || DEFAULT_OPENING_HOURS).trim() || DEFAULT_OPENING_HOURS;
+  const todayKey = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
+  const openNow = getRestaurantOpeningStatus(cafeHours).isOpen && weeklyHours?.[todayKey]?.isOpen !== false;
   const cafeCuisine = String(parsedRestaurant?.cuisine || 'Pure Veg Cafe').trim() || 'Pure Veg Cafe';
   const cafeDescription = String(parsedRestaurant?.desc || 'Serving fresh and flavorful meals made with quality ingredients, with quick service and a comfortable cafe experience.').trim();
 
@@ -217,18 +238,6 @@ export default function CafeDetailsScreen() {
 
             <InfoRow>
               <InfoIconWrap>
-                <Ionicons name="time-outline" size={18} color="#f68712" />
-              </InfoIconWrap>
-              <InfoTextWrap>
-                <InfoLabel>Opening Hours</InfoLabel>
-                <InfoValue>{cafeHours}</InfoValue>
-              </InfoTextWrap>
-            </InfoRow>
-
-            <InfoDivider />
-
-            <InfoRow>
-              <InfoIconWrap>
                 <Ionicons name="call-outline" size={18} color="#f68712" />
               </InfoIconWrap>
               <InfoTextWrap>
@@ -236,6 +245,45 @@ export default function CafeDetailsScreen() {
                 <InfoValue>{cafePhone}</InfoValue>
               </InfoTextWrap>
             </InfoRow>
+
+            {fssai ? (
+              <>
+                <InfoDivider />
+                <InfoRow>
+                  <InfoIconWrap>
+                    <Ionicons name="shield-checkmark-outline" size={18} color="#f68712" />
+                  </InfoIconWrap>
+                  <InfoTextWrap>
+                    <InfoLabel>FSSAI Licence No.</InfoLabel>
+                    <InfoValue selectable>{fssai}</InfoValue>
+                  </InfoTextWrap>
+                </InfoRow>
+              </>
+            ) : null}
+          </InfoCard>
+
+          <InfoCard>
+            <HoursHeader>
+              <Ionicons name="time-outline" size={18} color="#f68712" />
+              <HoursTitle>Opening hours</HoursTitle>
+              <OpenPill $open={openNow}><OpenPillText $open={openNow}>{openNow ? 'Open now' : 'Closed now'}</OpenPillText></OpenPill>
+            </HoursHeader>
+            {weeklyHours ? WEEK_DAYS.map((day) => {
+              const entry = weeklyHours[day.key];
+              const isToday = day.key === todayKey;
+              const isOpen = Boolean(entry?.isOpen && entry.open && entry.close);
+              return (
+                <HoursRow key={day.key} $today={isToday}>
+                  <HoursDay $today={isToday}>{day.label}{isToday ? ' (Today)' : ''}</HoursDay>
+                  <HoursTime $today={isToday} $closed={!isOpen}>{isOpen ? `${to12Hour(entry.open)} – ${to12Hour(entry.close)}` : 'Closed'}</HoursTime>
+                </HoursRow>
+              );
+            }) : (
+              <HoursRow $today>
+                <HoursDay $today>Every day</HoursDay>
+                <HoursTime $today $closed={false}>{cafeHours}</HoursTime>
+              </HoursRow>
+            )}
           </InfoCard>
 
           <SectionTitle>About Cafe</SectionTitle>
@@ -424,6 +472,53 @@ const InfoDivider = styled.View`
   background-color: #f2f2f2;
 `;
 
+const HoursHeader = styled.View`
+  flex-direction: row;
+  align-items: center;
+  padding-bottom: 8px;
+`;
+
+const HoursTitle = styled.Text`
+  flex: 1;
+  margin-left: 8px;
+  color: ${T.color.ink};
+  font-size: 15px;
+  font-weight: 800;
+`;
+
+const OpenPill = styled.View<{ $open: boolean }>`
+  padding: 3px 10px;
+  border-radius: 999px;
+  background-color: ${({ $open }: { $open: boolean }) => ($open ? T.color.successSoft : '#fef2f2')};
+`;
+
+const OpenPillText = styled.Text<{ $open: boolean }>`
+  font-size: 11px;
+  font-weight: 800;
+  color: ${({ $open }: { $open: boolean }) => ($open ? T.color.success : T.color.danger)};
+`;
+
+const HoursRow = styled.View<{ $today?: boolean }>`
+  flex-direction: row;
+  justify-content: space-between;
+  padding: 8px 10px;
+  margin: 0 -10px;
+  border-radius: 10px;
+  background-color: ${({ $today }: { $today?: boolean }) => ($today ? T.color.brandSoft : 'transparent')};
+`;
+
+const HoursDay = styled.Text<{ $today?: boolean }>`
+  color: ${({ $today }: { $today?: boolean }) => ($today ? T.color.ink : T.color.inkSoft)};
+  font-size: 13px;
+  font-weight: ${({ $today }: { $today?: boolean }) => ($today ? '800' : '500')};
+`;
+
+const HoursTime = styled.Text<{ $today?: boolean; $closed: boolean }>`
+  color: ${({ $closed, $today }: { $closed: boolean; $today?: boolean }) => ($closed ? T.color.danger : $today ? T.color.ink : T.color.inkSoft)};
+  font-size: 13px;
+  font-weight: ${({ $today }: { $today?: boolean }) => ($today ? '800' : '600')};
+`;
+
 const SectionTitle = styled.Text`
   margin-top: 16px;
   color: #161616;
@@ -444,7 +539,7 @@ const ActionRow = styled.View`
   justify-content: space-between;
 `;
 
-const SecondaryAction = styled.TouchableOpacity`
+const SecondaryAction = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: 48.5%;
   border-width: 1px;
   border-color: #ffdcb8;
@@ -458,16 +553,16 @@ const SecondaryAction = styled.TouchableOpacity`
 
 const SecondaryActionText = styled.Text<{ $disabled?: boolean }>`
   margin-left: 6px;
-  color: ${({ $disabled }) => ($disabled ? '#9ca3af' : '#f68712')};
+  color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? T.color.faint : T.color.brand)};
   font-size: 13px;
   font-weight: 800;
 `;
 
-const PrimaryAction = styled.TouchableOpacity`
+const PrimaryAction = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   margin-top: 12px;
-  height: 50px;
-  border-radius: 12px;
-  background-color: #f68712;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  background-color: ${PRIMARY_BUTTON_STYLE.backgroundColor};
   align-items: center;
   justify-content: center;
   flex-direction: row;
@@ -475,8 +570,8 @@ const PrimaryAction = styled.TouchableOpacity`
 
 const PrimaryActionText = styled.Text`
   color: #fff;
-  font-size: 15px;
-  font-weight: 900;
+  font-size: 16px;
+  font-weight: 700;
   margin-right: 6px;
 `;
 

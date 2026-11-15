@@ -29,7 +29,22 @@ interface BackendTodaysDealsRow {
 export const getTodaysBestDeals = async (coords?: { latitude: number; longitude: number } | null): Promise<TodaysDealsRow[]> => {
   const query = coords ? `?lat=${coords.latitude}&lng=${coords.longitude}` : '';
   const rows = await apiClient.get<BackendTodaysDealsRow[]>(`/public/todays-deals${query}`);
-  return rows.map((row) => ({
+  return rows.map(mapTodaysDealsRow);
+};
+
+/** One page of restaurant rows for the tab's infinite scroll (a backend that doesn't page
+ *  this yet returns them all as one page). */
+export const pageTodaysBestDeals = async (
+  coords: { latitude: number; longitude: number } | null | undefined,
+  page: number
+): Promise<{ items: TodaysDealsRow[]; hasMore: boolean }> => {
+  const query = coords ? `?lat=${coords.latitude}&lng=${coords.longitude}` : '';
+  const result = await apiClient.getPage<BackendTodaysDealsRow>(`/public/todays-deals${query}`, page, 10);
+  return { items: result.items.map(mapTodaysDealsRow), hasMore: result.hasMore };
+};
+
+function mapTodaysDealsRow(row: BackendTodaysDealsRow): TodaysDealsRow {
+  return {
     restaurant: mapDirectoryRestaurant(row.restaurant),
     offers: row.offers,
     deals: row.deals.map((deal) => ({
@@ -37,5 +52,5 @@ export const getTodaysBestDeals = async (coords?: { latitude: number; longitude:
       resolvedItems: deal.items.map((item) => ({ itemId: item.menuItemId, qty: item.quantity, name: item.name || 'Item' })),
       foodTypes: Array.from(new Set(deal.items.map((item) => item.foodType || 'VEG'))),
     })),
-  }));
-};
+  };
+}

@@ -1,4 +1,4 @@
-import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import PageHeader, { TabScreen } from '@/components/common/PageHeader';
 import { ListRow, Palette, SectionCard, SectionTitle } from '@/components/common/ListSection';
 import { AppContent } from '@/constants/appContent';
 import { AppStrings } from '@/constants/appStrings';
@@ -8,6 +8,7 @@ import { router } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
+import { T } from '@/constants/tokens';
 
 export default function MoreScreen() {
   const user = useSelector((state: RootState) => state.auth.user);
@@ -17,14 +18,14 @@ export default function MoreScreen() {
   const go = (path: string) => router.push(path as never);
 
   return (
-    <PageScreen style={styles.page}>
+    <TabScreen style={styles.page}>
       <PageHeader title="More" showBack={false} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refer and earn, invite friends"
           onPress={() => go('/user/refer-earn')}
-          style={({ pressed }) => [styles.referCard, pressed && { opacity: 0.92 }]}
+          style={({ pressed }) => [styles.referCard, pressed && { opacity: 0.8 }]}
         >
           <View style={{ flex: 1 }}>
             <Text style={styles.referKicker}>REFER & EARN</Text>
@@ -77,7 +78,7 @@ export default function MoreScreen() {
 
         <Text style={styles.version}>Version {appVersion}</Text>
       </ScrollView>
-    </PageScreen>
+    </TabScreen>
   );
 }
 
@@ -93,9 +94,9 @@ const styles = StyleSheet.create({
     padding: 18,
     overflow: 'hidden',
   },
-  referKicker: { color: '#ffe3c4', fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
+  referKicker: { color: T.color.brandBorder, fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
   referTitle: { color: '#fff', fontSize: 18, fontWeight: '800', marginTop: 4, lineHeight: 23 },
-  referCopy: { color: '#fff4e8', fontSize: 12.5, lineHeight: 18, marginTop: 6 },
+  referCopy: { color: T.color.brandSoft, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
   referCta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 14, backgroundColor: '#fff', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 },
   referCtaText: { color: Palette.primary, fontWeight: '800', fontSize: 13 },
   referIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },

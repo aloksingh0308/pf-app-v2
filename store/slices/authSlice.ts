@@ -80,7 +80,9 @@ const authSlice = createSlice({
       state.loading = action.payload;
     },
     setUser: (state, action: PayloadAction<UserProfile>) => {
-      state.user = action.payload;
+      // Home refreshes the profile on a timer — an unchanged profile must keep the same
+      // object, or every `state.auth.user` selector re-renders its screen for nothing.
+      if (JSON.stringify(state.user) !== JSON.stringify(action.payload)) state.user = action.payload;
       state.isAuthenticated = true;
       state.error = null;
       state.loading = false;

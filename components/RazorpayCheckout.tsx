@@ -155,6 +155,6 @@ const HeaderTitle = styled.Text`
   color: #222;
 `;
 
-const CloseButton = styled.TouchableOpacity`
+const CloseButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding: ${moderateScale(4)}px;
 `;

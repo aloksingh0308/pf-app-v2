@@ -2,22 +2,26 @@ import { dobToIso } from '@/utils/dateOfBirth';
 import { getPendingReferralCode, normalizeReferralCode, onPendingLinkChange } from '@/utils/deepLinks';
 import { getInstallReferrer } from '@/utils/referral';
 import DateOfBirthPicker from '@/components/DateOfBirthPicker';
+import { AuthBackdrop, AuthBrandHeader, AuthCard } from "@/components/AuthBackdrop";
 import AppButton from "@/components/common/AppButton";
 import { AppColors } from "@/constants/appColors";
 import { useAppLoader } from "@/hooks/useAppLoader";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
-import { Keyboard, KeyboardAvoidingView, Platform, ScrollView, TouchableWithoutFeedback } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, ScrollView, TextInputProps, TouchableWithoutFeedback } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDispatch } from "react-redux";
 import styled from "styled-components/native";
 import { showAlert, showErrorAlert } from "../services/alertService";
-import { errorReason, track } from "../services/analytics";
+import { errorParams, track } from "../services/analytics";
 import { authService } from "../services/authService";
 import { storageService } from "../services/storageService";
 import { userService } from "../services/userService";
 import { AppDispatch } from "../store";
 import { setError, setLoading, setUser } from "../store/slices/authSlice";
+import { T } from '@/constants/tokens';
+
+const INPUT_BG = T.color.inputBg;
 
 const validateEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -158,13 +162,13 @@ const CompleteProfileScreen = () => {
       dispatch(setLoading(false));
       const errorMessage = error?.message || 'Failed to complete profile setup. Please try again.';
       dispatch(setError(errorMessage));
-      track('sign_up_failed', { reason: errorReason(error) });
+      track('sign_up_failed', { ...errorParams(error) });
       showErrorAlert(error, errorMessage, 'Setup Failed');
     }
   };
 
   return (
-    <Container>
+    <AuthBackdrop>
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -175,53 +179,62 @@ const CompleteProfileScreen = () => {
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: insets.bottom + 40, flexGrow: 1, paddingHorizontal: 20, paddingTop: insets.top + 32 }}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 16, flexGrow: 1, justifyContent: 'center', paddingHorizontal: 20, paddingTop: insets.top + 12 }}
           >
-            <Title accessibilityRole="header">Complete your profile</Title>
-            <Subtitle>Just a few details to finish setting up your account.</Subtitle>
+            <AuthBrandHeader logoSize={72} />
+            <AuthCard>
+              <Title accessibilityRole="header">Complete your profile</Title>
+              <Subtitle>Just a few details to finish setting up your account.</Subtitle>
 
-            <FieldInput
-              placeholder="Full Name *"
-              placeholderTextColor="#888"
-              value={name}
-              onChangeText={setName}
-              editable={!loading}
-            />
+              <FieldLabel>Full name *</FieldLabel>
+              <ProfileInput
+                placeholder="Your name"
+                placeholderTextColor="#a99a8e"
+                value={name}
+                onChangeText={setName}
+                editable={!loading}
+              />
 
-            <FieldInput
-              placeholder="Email Address (Optional)"
-              placeholderTextColor="#888"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              value={email}
-              onChangeText={setEmail}
-              editable={!loading}
-            />
+              <FieldLabel>Email (optional)</FieldLabel>
+              <ProfileInput
+                placeholder="you@example.com"
+                placeholderTextColor="#a99a8e"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={email}
+                onChangeText={setEmail}
+                editable={!loading}
+              />
 
-            <DateOfBirthPicker value={dateOfBirth} onChange={setDateOfBirth} disabled={loading} />
+              <FieldLabel>Date of birth (optional)</FieldLabel>
+              <DateOfBirthPicker value={dateOfBirth} onChange={setDateOfBirth} placeholder="DD/MM/YYYY" disabled={loading} fieldStyle={DOB_FIELD_STYLE} />
 
-            <FieldInput
-              placeholder="Phone Number"
-              placeholderTextColor="#888"
-              value={phoneNumber}
-              editable={false}
-            />
+              <FieldLabel>Mobile number</FieldLabel>
+              <ProfileInput
+                placeholder="Phone Number"
+                placeholderTextColor="#a99a8e"
+                value={phoneNumber ? `+91 ${phoneNumber}` : ''}
+                editable={false}
+                style={{ color: '#8a6a55' }}
+              />
 
-            <FieldInput
-              placeholder="Referral Code (Optional)"
-              placeholderTextColor="#888"
-              autoCapitalize="characters"
-              value={referralCode}
-              onChangeText={setReferralCode}
-              editable={!loading}
-            />
+              <FieldLabel>Referral code (optional)</FieldLabel>
+              <ProfileInput
+                placeholder="Have a friend's code?"
+                placeholderTextColor="#a99a8e"
+                autoCapitalize="characters"
+                value={referralCode}
+                onChangeText={setReferralCode}
+                editable={!loading}
+              />
 
-            <AppButton
-              title={loading ? 'Saving...' : 'Continue'}
-              onPress={handleContinue}
-              loading={loading}
-              style={{ minHeight: 50, marginTop: 8 }}
-            />
+              <AppButton
+                title={loading ? 'Saving...' : 'Continue'}
+                onPress={handleContinue}
+                loading={loading}
+                style={{ marginTop: 6 }}
+              />
+            </AuthCard>
 
             <DifferentNumberButton accessibilityRole="button" onPress={handleCancel} disabled={loading}>
               <DifferentNumberText>Not you? Use a different number</DifferentNumberText>
@@ -229,61 +242,69 @@ const CompleteProfileScreen = () => {
           </ScrollView>
         </KeyboardAvoidingView>
       </TouchableWithoutFeedback>
-    </Container>
+    </AuthBackdrop>
   );
 };
 
 export default CompleteProfileScreen;
 
-const Container = styled.ImageBackground.attrs({
-  source: require('../assets/images/signup_bg.png'),
-  resizeMode: 'cover',
-})`
-  flex: 1;
-  background-color: ${AppColors.background};
-  min-height: 100%;
-  width: 100%;
-`;
+// Matches FieldInput below.
+const DOB_FIELD_STYLE = { borderWidth: 1.5, borderColor: 'transparent', borderRadius: 14, backgroundColor: INPUT_BG, marginBottom: 12, minHeight: 48 } as const;
 
+type FocusEvent = Parameters<NonNullable<TextInputProps['onFocus']>>[0];
 
-
-
+/** Same look as the login fields: soft peach fill, white with an orange border while focused. */
+function ProfileInput(props: TextInputProps) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <FieldInput
+      {...props}
+      $focused={focused}
+      onFocus={(e: FocusEvent) => { setFocused(true); props.onFocus?.(e); }}
+      onBlur={(e: FocusEvent) => { setFocused(false); props.onBlur?.(e); }}
+    />
+  );
+}
 
 const Title = styled.Text`
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 800;
-  color: ${AppColors.textPrimary};
-  text-align: center;
-  margin-bottom: 8px;
+  color: #252a36;
 `;
 
-const DifferentNumberButton = styled.TouchableOpacity`
-  margin-top: 18px;
+const Subtitle = styled.Text`
+  font-size: 14px;
+  color: ${T.color.muted};
+  margin-top: 4px;
+  margin-bottom: 14px;
+`;
+
+const FieldLabel = styled.Text`
+  font-size: 13px;
+  font-weight: 700;
+  color: #653919;
+  margin-bottom: 5px;
+`;
+
+const FieldInput = styled.TextInput<{ $focused?: boolean }>`
+  border: 1.5px solid ${(p: { $focused?: boolean }) => (p.$focused ? T.color.brand : 'transparent')};
+  border-radius: 14px;
+  background-color: ${(p: { $focused?: boolean }) => (p.$focused ? T.color.surface : INPUT_BG)};
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 16px;
+  color: ${T.color.ink};
+  align-self: stretch;
+`;
+
+const DifferentNumberButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  margin-top: 10px;
   align-self: center;
   padding: 8px 12px;
 `;
 
 const DifferentNumberText = styled.Text`
-  color: ${AppColors.primary};
+  color: ${T.color.brand};
   font-size: 14px;
   font-weight: 700;
-`;
-
-const Subtitle = styled.Text`
-  font-size: 15px;
-  color: ${AppColors.textSecondary};
-  margin-bottom: 24px;
-  text-align: center;
-`;
-
-const FieldInput = styled.TextInput`
-  border: 1px solid ${AppColors.inputBorder};
-  border-radius: 8px;
-  padding: 14px;
-  margin-bottom: 12px;
-  font-size: 16px;
-  color: ${AppColors.textPrimary};
-  background-color: ${AppColors.background};
-  width: 100%;
-  align-self: stretch;
 `;

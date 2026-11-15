@@ -1,4 +1,4 @@
-import { AppColors } from '@/constants/appColors';
+import { T } from '@/constants/tokens';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import React, { ComponentProps, ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
@@ -11,18 +11,19 @@ type IconName = ComponentProps<typeof Ionicons>['name'];
  * a small uppercase SectionTitle above a rounded SectionCard holding ListRows.
  */
 
+/** Aliases onto the app-wide tokens (constants/tokens.ts) so these screens match the rest. */
 export const Palette = {
-  page: '#f7f7f9',
-  card: '#ffffff',
-  hairline: '#eeeef1',
-  primary: AppColors.primary,
-  primarySoft: '#fff3e6',
-  text: '#1c1f26',
-  textSecondary: '#6b7280',
-  textMuted: '#9ca3af',
-  success: '#15803d',
-  successSoft: '#e8f6ec',
-  danger: '#d92d20',
+  page: T.color.canvas,
+  card: T.color.surface,
+  hairline: T.color.line,
+  primary: T.color.brand,
+  primarySoft: T.color.brandSoft,
+  text: T.color.ink,
+  textSecondary: T.color.muted,
+  textMuted: T.color.faint,
+  success: T.color.success,
+  successSoft: T.color.successSoft,
+  danger: T.color.danger,
   dangerSoft: '#fdecea',
 };
 
@@ -114,20 +115,16 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 12, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: Palette.textMuted },
   card: {
     backgroundColor: Palette.card,
-    borderRadius: 16,
+    borderRadius: T.radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e6e6ea',
+    borderColor: T.color.line,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
+    ...T.shadow.card,
   },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: Palette.hairline, marginLeft: 64 },
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 60, paddingHorizontal: 14, paddingVertical: 12, gap: 12 },
-  rowPressed: { backgroundColor: '#fafafa' },
-  iconBubble: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  rowPressed: { backgroundColor: T.color.canvas },
+  iconBubble: { width: 38, height: 38, borderRadius: T.radius.md, alignItems: 'center', justifyContent: 'center' },
   rowText: { flex: 1 },
   rowTitle: { fontSize: 15, fontWeight: '600', color: Palette.text },
   rowSubtitle: { fontSize: 12.5, color: Palette.textSecondary, marginTop: 2, lineHeight: 17 },

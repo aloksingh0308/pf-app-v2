@@ -2,10 +2,12 @@ import Ionicons from '@react-native-vector-icons/ionicons';
 import { useCallback, useEffect, useState } from 'react';
 import { Modal, Pressable, Text, View } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled from 'styled-components/native';
 import AddressModalMapPicker from './AddressModalMapPicker';
 import { saveCachedUserLocation } from '../services/locationCacheService';
 import { AppDispatch, RootState } from '../store';
+import { T } from '@/constants/tokens';
 
 const GOOGLE_MAPS_API_KEY = String(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '').trim();
 
@@ -26,6 +28,7 @@ type Props = {
  * location (redux + AsyncStorage cache) that Home/restaurant listings read.
  */
 export default function ChangeLocationModal({ visible, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const dispatch = useDispatch<AppDispatch>();
   const locationState = useSelector((state: RootState) => state.location);
 
@@ -69,9 +72,9 @@ export default function ChangeLocationModal({ visible, onClose }: Props) {
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Overlay>
         <Backdrop onPress={onClose} />
-        <Card>
+        <Card style={{ paddingBottom: insets.bottom + 16 }}>
           <View style={{ alignItems: 'center', marginBottom: 4 }}>
-            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: '#eee', marginBottom: 12 }} />
+            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: T.color.line, marginBottom: 12 }} />
             <Title>Change Location</Title>
             <Subtitle>Search an area, street name, or drop a pin</Subtitle>
             <CloseButton onPress={onClose} activeOpacity={0.8} style={{ position: 'absolute', right: 0, top: 0 }}>
@@ -133,7 +136,7 @@ const Subtitle = styled.Text`
   margin-bottom: 4px;
 `;
 
-const CloseButton = styled.TouchableOpacity`
+const CloseButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: 28px;
   height: 28px;
   border-radius: 14px;
@@ -142,7 +145,7 @@ const CloseButton = styled.TouchableOpacity`
   background-color: #f2f2f2;
 `;
 
-const ConfirmButton = styled.TouchableOpacity`
+const ConfirmButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background-color: #ff9100;
   border-radius: 12px;
   min-height: 52px;

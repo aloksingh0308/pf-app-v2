@@ -1,10 +1,14 @@
+import { PRIMARY_BUTTON_GUTTER, PRIMARY_BUTTON_STYLE, PRIMARY_BUTTON_TEXT_STYLE } from '@/components/common/AppButton';
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import AppImage from '@/components/AppImage';
-import FloatingCartButton from '@/components/FloatingCartButton';
+import { useAppLoader } from '@/hooks/useAppLoader';
+import { calculateCartTotals } from '@/utils/dealCart';
+import Ionicons from '@react-native-vector-icons/ionicons';
 import FoodTypeMark, { FOOD_TYPE_LABELS } from '@/components/common/FoodTypeMark';
 import { decrementQuantity, incrementQuantity } from '@/store/slices/cartSlice';
 import { AddonOption, ModifierGroup, Product, SelectedModifier } from '@/types/Product';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
+import { ScrollView } from 'react-native';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
@@ -13,10 +17,12 @@ import { buildCartItemFromProduct, buildProductCartKey, getProductVariants, getS
 import { showAlert } from '@/services/alertService';
 import { useAddToCartWithRestaurantGuard } from '@/hooks/useAddToCartWithRestaurantGuard';
 import { getAddons, getModifiers } from '@/services/menuService';
+import { T } from '@/constants/tokens';
 
 const ProductDetailScreen = () => {
   const insets = useSafeAreaInsets();
   const dispatch = useDispatch();
+  const appLoader = useAppLoader();
   const { addItem } = useAddToCartWithRestaurantGuard();
   const { product } = useLocalSearchParams();
   const parsedProduct: Product = JSON.parse(
@@ -165,131 +171,205 @@ const ProductDetailScreen = () => {
     );
   };
 
-  const imageUri = parsedProduct.images && parsedProduct.images.length > 0 ? fixFirebaseUrl(parsedProduct.images?.[0]) : 'https://via.placeholder.com/300';
+  const imageUri = parsedProduct.images && parsedProduct.images.length > 0 ? fixFirebaseUrl(parsedProduct.images?.[0]) : '';
   const qtyAndServes = [parsedProduct.qty, parsedProduct.serves]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .join(' • ');
+  const description = String(parsedProduct.description || '').trim();
   const variantPrice = Number(selectedVariant?.price ?? parsedProduct.price ?? 0);
   const unitPrice = variantPrice + modifierPriceDelta + addonPriceDelta;
-  const actionQty = isAdded ? currentQty : 1;
-  const actionTotal = unitPrice * actionQty;
-  const actionLabel = `${actionQty} ${actionQty === 1 ? 'item' : 'items'} • ₹${actionTotal.toFixed(2)}`;
-  console.log('Image URI:', imageUri);
+  // A lone variant (usually "Regular") is not a choice — skip the picker and just show the price.
+  const showVariantPicker = variants.length > 1;
+  const cartCount = useMemo(() => calculateCartTotals(cartItems as any).displayCount, [cartItems]);
+
+  const openCart = () => {
+    appLoader.show();
+    router.push({ pathname: '/user/cart' });
+  };
+
   return (
     <Screen>
-      <PageHeader title="Product Details" />
-      <Container contentContainerStyle={{ paddingBottom: Math.max(140, insets.bottom + 110) }}>
+      <PageHeader title="Item Details" />
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 120 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <ImageWrap>
+          {imageUri ? (
+            <ProductImage uri={imageUri} contentFit="cover" />
+          ) : (
+            <ImageFallback>
+              <Ionicons name="restaurant-outline" size={48} color="#f5b97a" />
+            </ImageFallback>
+          )}
+          {outOfStock ? (
+            <SoldOutOverlay>
+              <SoldOutText>Currently unavailable</SoldOutText>
+            </SoldOutOverlay>
+          ) : null}
+        </ImageWrap>
 
-
-        <ProductImage uri={imageUri} contentFit="cover" />
-        <DetailsCard>
+        <InfoBlock>
           {parsedProduct.foodType ? (
             <FoodTypeRow>
-              <FoodTypeMark foodType={parsedProduct.foodType} size={16} />
+              <FoodTypeMark foodType={parsedProduct.foodType} size={14} />
               <FoodTypeLabel>{FOOD_TYPE_LABELS[parsedProduct.foodType]}</FoodTypeLabel>
             </FoodTypeRow>
           ) : null}
           <Title>{parsedProduct.name}</Title>
           {qtyAndServes ? <MetaText>{qtyAndServes}</MetaText> : null}
-          {outOfStock ? <StockStatusText>Currently out of stock</StockStatusText> : null}
-
-          {variants.length > 0 ? (
-            <VariantSection>
-              <VariantSectionTitle>Select Variant</VariantSectionTitle>
-              <VariantList>
-                {variants.map((variant) => {
-                  const active = String(variant.id) === String(selectedVariant?.id || '');
-                  return (
-                    <VariantButton
-                      key={variant.id || variant.name}
-                      onPress={() => setSelectedVariantId(variant.id || null)}
-                      $active={active}
-                    >
-                      <VariantName $active={active}>{variant.name}</VariantName>
-                      {variant.description ? <VariantMeta $active={active}>{variant.description}</VariantMeta> : null}
-                      <VariantPrice $active={active}>₹{Number(variant.price || 0).toFixed(2)}</VariantPrice>
-                    </VariantButton>
-                  );
-                })}
-              </VariantList>
-            </VariantSection>
-          ) : null}
-
           <PriceRow>
-            <Price>₹{unitPrice.toFixed(2)}</Price>
+            <Price>{formatPrice(unitPrice)}</Price>
+            {showVariantPicker && selectedVariant?.name ? <PriceNote>· {selectedVariant.name}</PriceNote> : null}
           </PriceRow>
+          {description && description.toLowerCase() !== String(parsedProduct.name || '').toLowerCase() ? (
+            <Description>{description}</Description>
+          ) : null}
+        </InfoBlock>
 
-          <Description>{parsedProduct.description}</Description>
+        {showVariantPicker ? (
+          <Section>
+            <SectionHeader>
+              <SectionTitle>Choose an option</SectionTitle>
+              <Tag $required>Required</Tag>
+            </SectionHeader>
+            <OptionList>
+              {variants.map((variant, index) => {
+                const active = String(variant.id) === String(selectedVariant?.id || '');
+                const meta = String(variant.description || '').trim();
+                return (
+                  <OptionRow
+                    key={variant.id || variant.name}
+                    onPress={() => setSelectedVariantId(variant.id || null)}
+                    $last={index === variants.length - 1}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: active }}
+                  >
+                    <Ionicons name={active ? 'radio-button-on' : 'radio-button-off'} size={20} color={active ? T.color.brand : '#c4c8cf'} />
+                    <OptionTextWrap>
+                      <OptionName $active={active}>{variant.name}</OptionName>
+                      {meta && meta.toLowerCase() !== String(variant.name || '').toLowerCase() ? <OptionMeta>{meta}</OptionMeta> : null}
+                    </OptionTextWrap>
+                    <OptionPrice $active={active}>{formatPrice(Number(variant.price || 0))}</OptionPrice>
+                  </OptionRow>
+                );
+              })}
+            </OptionList>
+          </Section>
+        ) : null}
 
-          {modifierGroups.map((group) => (
-            <VariantSection key={group.id}>
-              <VariantSectionTitle>
-                {group.name}{group.required ? ' (Required)' : ' (Optional)'}
-                {group.multiSelect ? ` · Choose up to ${group.maxSelect}` : ''}
-              </VariantSectionTitle>
-              <VariantList>
-                {group.options.map((option) => {
-                  const active = (selectedModifierOptions[group.id] || []).includes(option.name);
-                  return (
-                    <VariantButton key={option.name} onPress={() => toggleModifierOption(group, option.name)} $active={active}>
-                      <ModifierOptionRow>
-                        <VariantName $active={active}>{option.name}</VariantName>
-                        {option.priceDelta > 0 ? <VariantPrice $active={active}>+₹{option.priceDelta.toFixed(2)}</VariantPrice> : null}
-                      </ModifierOptionRow>
-                    </VariantButton>
-                  );
-                })}
-              </VariantList>
-            </VariantSection>
-          ))}
+        {modifierGroups.map((group) => (
+          <Section key={group.id}>
+            <SectionHeader>
+              <SectionTitle>{group.name}</SectionTitle>
+              <Tag $required={group.required}>{group.required ? 'Required' : 'Optional'}</Tag>
+            </SectionHeader>
+            {group.multiSelect ? <SectionHint>Choose up to {group.maxSelect}</SectionHint> : null}
+            <OptionList>
+              {group.options.map((option, index) => {
+                const active = (selectedModifierOptions[group.id] || []).includes(option.name);
+                const icon = group.multiSelect
+                  ? (active ? 'checkbox' : 'square-outline')
+                  : (active ? 'radio-button-on' : 'radio-button-off');
+                return (
+                  <OptionRow
+                    key={option.name}
+                    onPress={() => toggleModifierOption(group, option.name)}
+                    $last={index === group.options.length - 1}
+                    accessibilityRole={group.multiSelect ? 'checkbox' : 'radio'}
+                    accessibilityState={{ checked: active }}
+                  >
+                    <Ionicons name={icon} size={20} color={active ? T.color.brand : '#c4c8cf'} />
+                    <OptionTextWrap>
+                      <OptionName $active={active}>{option.name}</OptionName>
+                    </OptionTextWrap>
+                    {option.priceDelta > 0 ? <OptionPrice $active={active}>+{formatPrice(option.priceDelta)}</OptionPrice> : null}
+                  </OptionRow>
+                );
+              })}
+            </OptionList>
+          </Section>
+        ))}
 
-          {addonOptions.length > 0 && (
-            <VariantSection>
-              <VariantSectionTitle>Add-ons (Optional)</VariantSectionTitle>
-              <VariantList>
-                {addonOptions.map((addon) => {
-                  const active = selectedAddonIds.includes(addon.id);
-                  return (
-                    <VariantButton key={addon.id} onPress={() => toggleAddon(addon.id)} $active={active}>
-                      <ModifierOptionRow>
-                        <VariantName $active={active}>{addon.name}</VariantName>
-                        <VariantPrice $active={active}>+₹{addon.price.toFixed(2)}</VariantPrice>
-                      </ModifierOptionRow>
-                    </VariantButton>
-                  );
-                })}
-              </VariantList>
-            </VariantSection>
-          )}
-        </DetailsCard>
-      </Container>
+        {addonOptions.length > 0 && (
+          <Section>
+            <SectionHeader>
+              <SectionTitle>Add-ons</SectionTitle>
+              <Tag>Optional</Tag>
+            </SectionHeader>
+            <OptionList>
+              {addonOptions.map((addon, index) => {
+                const active = selectedAddonIds.includes(addon.id);
+                return (
+                  <OptionRow
+                    key={addon.id}
+                    onPress={() => toggleAddon(addon.id)}
+                    $last={index === addonOptions.length - 1}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: active }}
+                  >
+                    <Ionicons name={active ? 'checkbox' : 'square-outline'} size={20} color={active ? T.color.brand : '#c4c8cf'} />
+                    <OptionTextWrap>
+                      <OptionName $active={active}>{addon.name}</OptionName>
+                    </OptionTextWrap>
+                    <OptionPrice $active={active}>+{formatPrice(addon.price)}</OptionPrice>
+                  </OptionRow>
+                );
+              })}
+            </OptionList>
+          </Section>
+        )}
+      </ScrollView>
 
-      <BottomActionBar bottomInset={insets.bottom}>
-        <BottomActionRow>
-          <BottomSummary>{actionLabel}</BottomSummary>
-          {isAdded ? (
-            <QuantityRow>
-              <QtyBtn onPress={handleDecrement}>
-                <QtyText>-</QtyText>
-              </QtyBtn>
-              <QtyValue>{currentQty}</QtyValue>
-              <QtyBtn onPress={handleIncrement}>
-                <QtyText>+</QtyText>
-              </QtyBtn>
-            </QuantityRow>
-          ) : (
-            <AddButton onPress={handleAddToCart} $disabled={outOfStock}>
-              <AddText $disabled={outOfStock}>{outOfStock ? 'Out of Stock' : 'Add to Cart'}</AddText>
-            </AddButton>
-          )}
-        </BottomActionRow>
+      <BottomActionBar style={{ paddingBottom: Math.max(12, insets.bottom + 8) }}>
+        {isAdded ? (
+          <>
+            <Stepper>
+              <StepBtn onPress={handleDecrement} accessibilityRole="button" accessibilityLabel={`Remove one ${parsedProduct.name}`}>
+                <Ionicons name="remove" size={20} color={T.color.brand} />
+              </StepBtn>
+              <StepValue>{currentQty}</StepValue>
+              <StepBtn onPress={handleIncrement} accessibilityRole="button" accessibilityLabel={`Add one ${parsedProduct.name}`}>
+                <Ionicons name="add" size={20} color={T.color.brand} />
+              </StepBtn>
+            </Stepper>
+            <PrimaryButton onPress={openCart} activeOpacity={0.8}>
+              <PrimaryText>View cart{cartCount ? ` (${cartCount})` : ''}</PrimaryText>
+              <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginLeft: 6 }} />
+            </PrimaryButton>
+          </>
+        ) : (
+          <>
+            {cartCount > 0 ? (
+              <CartIconButton onPress={openCart} accessibilityRole="button" accessibilityLabel={`View cart, ${cartCount} items`}>
+                <Ionicons name="bag-handle-outline" size={22} color={T.color.brand} />
+                <CartBadge>
+                  <CartBadgeText>{cartCount}</CartBadgeText>
+                </CartBadge>
+              </CartIconButton>
+            ) : null}
+            <PrimaryButton onPress={handleAddToCart} $disabled={outOfStock} activeOpacity={0.8}>
+              {outOfStock ? (
+                <PrimaryText $disabled>Out of stock</PrimaryText>
+              ) : (
+                <>
+                  <PrimaryText>Add item</PrimaryText>
+                  <PrimaryDivider />
+                  <PrimaryText>{formatPrice(unitPrice)}</PrimaryText>
+                </>
+              )}
+            </PrimaryButton>
+          </>
+        )}
       </BottomActionBar>
-
-      <FloatingCartButton bottomOffset={Math.max(96, insets.bottom + 84)} />
     </Screen>
   );
 };
+
+/** ₹55 for whole rupees, ₹55.50 otherwise. */
+const formatPrice = (value: number) => `₹${Number.isInteger(value) ? value : value.toFixed(2)}`;
 
 export default ProductDetailScreen;
 
@@ -298,187 +378,50 @@ const Screen = styled(PageScreen)`
   background-color: #fff;
 `;
 
-const Container = styled.ScrollView`
-  flex: 1;
-  padding: 20px;
-  background-color: #fff;
-`;
-
-
-
-
-const ProductImage = styled(AppImage)`
+const ImageWrap = styled.View`
   width: 100%;
-  height: 320px;
-  border-radius: 12px;
+  aspect-ratio: 1.33;
+  border-radius: 18px;
+  overflow: hidden;
   background-color: #f5f5f5;
 `;
 
-const DetailsCard = styled.View`
-  margin-top: 14px;
-  background-color: #fff;
-  border-width: 1px;
-  border-color: #ededed;
-  border-radius: 14px;
-  padding: 14px;
+const ProductImage = styled(AppImage)`
+  width: 100%;
+  height: 100%;
 `;
 
-const Description = styled.Text`
-  font-size: 17px;
-  color: #555;
-  margin-top: 10px;
-  line-height: 24px;
-`;
-
-const MetaText = styled.Text`
-  font-size: 15px;
-  color: #1a1a1a;
-  margin-top: 8px;
-  font-weight: 500;
-`;
-
-const StockStatusText = styled.Text`
-  font-size: 14px;
-  color: #c2410c;
-  margin-top: 8px;
-  font-weight: 700;
-`;
-
-const Title = styled.Text`
-  font-size: 24px;
-  font-weight: 800;
-`;
-
-const PriceRow = styled.View`
-  flex-direction: row;
-  align-items: baseline;
-  column-gap: 10px;
-  margin-top: 10px;
-`;
-
-const VariantSection = styled.View`
-  margin-top: 14px;
-`;
-
-const VariantSectionTitle = styled.Text`
-  font-size: 15px;
-  font-weight: 700;
-  color: #1a1a1a;
-  margin-bottom: 8px;
-`;
-
-const VariantList = styled.View`
-  row-gap: 8px;
-`;
-
-const ModifierOptionRow = styled.View`
-  flex-direction: row;
+const ImageFallback = styled.View`
+  flex: 1;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  background-color: #fff4ea;
 `;
 
-const VariantButton = styled.TouchableOpacity<{ $active: boolean }>`
-  border-width: 1px;
-  border-color: ${({ $active }) => ($active ? '#f68712' : '#e5e7eb')};
-  background-color: ${({ $active }) => ($active ? '#fff7ef' : '#fff')};
-  border-radius: 12px;
-  padding: 12px;
-`;
-
-const VariantName = styled.Text<{ $active: boolean }>`
-  font-size: 15px;
-  font-weight: 700;
-  color: ${({ $active }) => ($active ? '#c96a0a' : '#1f2937')};
-`;
-
-const VariantMeta = styled.Text<{ $active: boolean }>`
-  font-size: 13px;
-  color: ${({ $active }) => ($active ? '#9a6708' : '#6b7280')};
-  margin-top: 4px;
-`;
-
-const VariantPrice = styled.Text<{ $active: boolean }>`
-  font-size: 14px;
-  font-weight: 700;
-  color: ${({ $active }) => ($active ? '#f68712' : '#374151')};
-  margin-top: 6px;
-`;
-
-const Price = styled.Text`
-  color: #f68712;
-  font-size: 22px;
-  font-weight: 800;
-`;
-
-const BottomActionBar = styled.View<{ bottomInset: number }>`
+const SoldOutOverlay = styled.View`
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 12px 20px ${({ bottomInset }: { bottomInset: number }) => Math.max(12, bottomInset + 8)}px;
-  background-color: #fff;
-  border-top-width: 1px;
-  border-top-color: #efefef;
-`;
-
-const BottomActionRow = styled.View`
-  flex-direction: row;
+  padding: 10px;
+  background-color: rgba(17, 24, 39, 0.65);
   align-items: center;
-  justify-content: space-between;
 `;
 
-const BottomSummary = styled.Text`
-  color: #1a1a1a;
-  font-size: 15px;
-  font-weight: 700;
-`;
-
-const QuantityRow = styled.View`
-  flex-direction: row;
-  align-items: center;
-  column-gap: 10px;
-`;
-
-const QtyBtn = styled.TouchableOpacity`
-  background-color: #f68712;
-  min-width: 56px;
-  min-height: 56px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-`;
-
-const QtyText = styled.Text`
+const SoldOutText = styled.Text`
   color: #fff;
-  font-size: 20px;
-  font-weight: bold;
-`;
-
-const QtyValue = styled.Text`
-  font-size: 22px;
+  font-size: 14px;
   font-weight: 700;
-  min-width: 28px;
-  text-align: center;
 `;
 
-const AddButton = styled.TouchableOpacity<{ $disabled?: boolean }>`
-  background-color: ${({ $disabled }) => ($disabled ? '#d1d5db' : '#f68712')};
-  padding: 16px;
-  border-radius: 10px;
-  align-items: center;
-  min-width: 190px;
-`;
-
-const AddText = styled.Text<{ $disabled?: boolean }>`
-  color: ${({ $disabled }) => ($disabled ? '#4b5563' : '#fff')};
-  font-size: 18px;
-  font-weight: 800;
+const InfoBlock = styled.View`
+  padding: 16px 2px 4px;
 `;
 
 const FoodTypeRow = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 `;
 
 const FoodTypeLabel = styled.Text`
@@ -486,4 +429,217 @@ const FoodTypeLabel = styled.Text`
   font-size: 12px;
   font-weight: 600;
   color: #4b5563;
+`;
+
+const Title = styled.Text`
+  font-size: 24px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const MetaText = styled.Text`
+  font-size: 14px;
+  color: #6b7280;
+  margin-top: 4px;
+  font-weight: 500;
+`;
+
+const PriceRow = styled.View`
+  flex-direction: row;
+  align-items: baseline;
+  margin-top: 10px;
+`;
+
+const Price = styled.Text`
+  color: ${T.color.ink};
+  font-size: 22px;
+  font-weight: 800;
+`;
+
+const PriceNote = styled.Text`
+  margin-left: 6px;
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 500;
+`;
+
+const Description = styled.Text`
+  font-size: 15px;
+  color: #4b5563;
+  margin-top: 10px;
+  line-height: 22px;
+`;
+
+const Section = styled.View`
+  margin-top: 16px;
+  border-width: 1px;
+  border-color: #eef0f3;
+  border-radius: 16px;
+  padding: 14px 14px 4px;
+  background-color: #fff;
+`;
+
+const SectionHeader = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+`;
+
+const SectionTitle = styled.Text`
+  flex: 1;
+  font-size: 16px;
+  font-weight: 700;
+  color: ${T.color.ink};
+`;
+
+const SectionHint = styled.Text`
+  font-size: 13px;
+  color: #6b7280;
+  margin-top: 2px;
+`;
+
+const Tag = styled.Text<{ $required?: boolean }>`
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  padding: 3px 8px;
+  border-radius: 10px;
+  color: ${({ $required }: { $required?: boolean }) => ($required ? '#c2410c' : T.color.muted)};
+  background-color: ${({ $required }: { $required?: boolean }) => ($required ? '#fff1e6' : '#f3f4f6')};
+`;
+
+const OptionList = styled.View`
+  margin-top: 6px;
+`;
+
+const OptionRow = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $last?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  min-height: 48px;
+  padding: 10px 0;
+  border-bottom-width: ${({ $last }: { $last?: boolean }) => ($last ? 0 : 1)}px;
+  border-bottom-color: #f1f2f4;
+`;
+
+const OptionTextWrap = styled.View`
+  flex: 1;
+  margin-left: 12px;
+`;
+
+const OptionName = styled.Text<{ $active: boolean }>`
+  font-size: 15px;
+  font-weight: ${({ $active }: { $active: boolean }) => ($active ? 700 : 500)};
+  color: ${T.color.ink};
+`;
+
+const OptionMeta = styled.Text`
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+`;
+
+const OptionPrice = styled.Text<{ $active: boolean }>`
+  margin-left: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: ${({ $active }: { $active: boolean }) => ($active ? T.color.ink : '#4b5563')};
+`;
+
+const BottomActionBar = styled.View`
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  flex-direction: row;
+  align-items: center;
+  column-gap: 12px;
+  padding: 12px ${PRIMARY_BUTTON_GUTTER}px;
+  background-color: #fff;
+  border-top-width: 1px;
+  border-top-color: #efefef;
+  elevation: 12;
+  shadow-color: #000;
+  shadow-opacity: 0.06;
+  shadow-radius: 8px;
+`;
+
+const PrimaryButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $disabled?: boolean }>`
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  padding: 0 ${PRIMARY_BUTTON_STYLE.paddingHorizontal}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  background-color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#d1d5db' : PRIMARY_BUTTON_STYLE.backgroundColor)};
+`;
+
+const PrimaryText = styled.Text<{ $disabled?: boolean }>`
+  color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#4b5563' : PRIMARY_BUTTON_TEXT_STYLE.color)};
+  font-size: ${PRIMARY_BUTTON_TEXT_STYLE.fontSize}px;
+  font-weight: ${PRIMARY_BUTTON_TEXT_STYLE.fontWeight};
+`;
+
+const PrimaryDivider = styled.View`
+  width: 1px;
+  height: 18px;
+  margin: 0 12px;
+  background-color: rgba(255, 255, 255, 0.5);
+`;
+
+const Stepper = styled.View`
+  flex-direction: row;
+  align-items: center;
+  height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-width: 1.5px;
+  border-color: ${T.color.brand};
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  background-color: #fff7ef;
+`;
+
+const StepBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  width: 44px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+`;
+
+const StepValue = styled.Text`
+  min-width: 24px;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 800;
+  color: ${T.color.brand};
+`;
+
+const CartIconButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  width: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  border-width: 1.5px;
+  border-color: ${T.color.brand};
+  background-color: #fff7ef;
+  align-items: center;
+  justify-content: center;
+`;
+
+const CartBadge = styled.View`
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background-color: ${T.color.brand};
+  border-width: 2px;
+  border-color: #fff;
+  align-items: center;
+  justify-content: center;
+`;
+
+const CartBadgeText = styled.Text`
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
 `;

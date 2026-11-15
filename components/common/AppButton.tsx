@@ -1,7 +1,22 @@
-import { AppColors } from '@/constants/appColors';
 import React from 'react';
-import { ActivityIndicator } from 'react-native';
+import { ActivityIndicator, Text } from 'react-native';
 import styled from 'styled-components/native';
+import { T } from '@/constants/tokens';
+
+/** The one primary-button shape every screen uses (login, cart, table picker, checkout…),
+ *  so CTAs look identical page to page. Hand-built buttons spread these in. */
+export const PRIMARY_BUTTON_STYLE = {
+  minHeight: 52,
+  borderRadius: 14,
+  paddingHorizontal: 20,
+  backgroundColor: T.color.brand,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+} as const;
+export const PRIMARY_BUTTON_TEXT_STYLE = { color: T.color.surface, fontSize: 16, fontWeight: '700' } as const;
+/** Side gutter for a full-width CTA pinned to the bottom of a page. */
+export const PRIMARY_BUTTON_GUTTER = 16;
 
 type Props = {
   title: string;
@@ -30,33 +45,19 @@ export default function AppButton({
     <Button
       onPress={onPress}
       disabled={isDisabled}
-      style={style}
-      backgroundColor={backgroundColor || AppColors.primary}
+      style={[PRIMARY_BUTTON_STYLE, backgroundColor ? { backgroundColor } : null, style]}
       isDisabled={isDisabled}
       activeOpacity={0.8}
     >
       {loading ? (
-        <ActivityIndicator color={textColor || AppColors.white} />
+        <ActivityIndicator color={textColor || T.color.surface} />
       ) : (
-        <ButtonText style={textStyle} textColor={textColor || AppColors.white}>{title}</ButtonText>
+        <Text style={[PRIMARY_BUTTON_TEXT_STYLE, textColor ? { color: textColor } : null, textStyle]}>{title}</Text>
       )}
     </Button>
   );
 }
 
-const Button = styled.TouchableOpacity.attrs({
-  activeOpacity: 0.7,
-})<{ backgroundColor: string; isDisabled: boolean }>`
-  background-color: ${({ backgroundColor }: { backgroundColor: string }) => backgroundColor};
-  padding: 12px;
-  border-radius: 8px;
-  align-items: center;
-  justify-content: center;
+const Button = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ isDisabled: boolean }>`
   opacity: ${({ isDisabled }: { isDisabled: boolean }) => (isDisabled ? 0.7 : 1)};
-`;
-
-const ButtonText = styled.Text<{ textColor: string }>`
-  color: ${({ textColor }: { textColor: string }) => textColor};
-  font-size: 14px;
-  font-weight: 700;
 `;

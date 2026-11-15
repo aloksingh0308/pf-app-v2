@@ -3,7 +3,7 @@ import { formatOfferHeadline, type OfferRecord } from '@/services/offersService'
 import { formatDistance, formatEta } from '@/services/restaurantService';
 import { moderateScale, scaleFont } from '@/utils/responsive';
 import Ionicons from '@react-native-vector-icons/ionicons';
-import React from 'react';
+import React, { memo } from 'react';
 import { Pressable, View } from 'react-native';
 import styled from 'styled-components/native';
 
@@ -29,7 +29,7 @@ const formatValidity = (validUntil: string): string => {
  *  code chip. Tapping it hands the offer to the restaurant details screen (app/home.tsx's
  *  `handleOfferPress`). `fullWidth` is the stacked "View All" list; otherwise it's sized for
  *  the horizontal home carousel. */
-export function OfferCard({ offer, onPress, fullWidth = false }: { offer: OfferRecord; onPress: () => void; fullWidth?: boolean }) {
+export const OfferCard = memo(function OfferCard({ offer, onPress, fullWidth = false }: { offer: OfferRecord; onPress: (offer: OfferRecord) => void; fullWidth?: boolean }) {
   const [amount, unit] = splitHeadline(formatOfferHeadline(offer));
   const conditions = [
     offer.minOrderAmount > 0 ? `Min order ₹${offer.minOrderAmount}` : 'No minimum order',
@@ -42,8 +42,8 @@ export function OfferCard({ offer, onPress, fullWidth = false }: { offer: OfferR
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${amount} ${unit} at ${offer.restaurantName}, code ${offer.couponCode}`}
-      onPress={onPress}
-      style={({ pressed }) => ({ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.985 : 1 }] })}
+      onPress={() => onPress(offer)}
+      style={({ pressed }) => ({ opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.985 : 1 }] })}
     >
       <Ticket
         style={[
@@ -87,7 +87,7 @@ export function OfferCard({ offer, onPress, fullWidth = false }: { offer: OfferR
       </Ticket>
     </Pressable>
   );
-}
+});
 
 const Ticket = styled.View`
   flex-direction: row;

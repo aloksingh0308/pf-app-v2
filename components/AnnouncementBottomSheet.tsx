@@ -1,7 +1,9 @@
 import AppImage from '@/components/AppImage';
 import { memo } from 'react';
 import { Pressable, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled from 'styled-components/native';
+import { T } from '@/constants/tokens';
 
 type AnnouncementBottomSheetProps = {
   visible: boolean;
@@ -18,6 +20,7 @@ const AnnouncementBottomSheet = memo(function AnnouncementBottomSheet({
   imageUrl,
   onClose,
 }: AnnouncementBottomSheetProps) {
+  const insets = useSafeAreaInsets();
   const hasImage = Boolean(imageUrl && imageUrl.trim());
 
   return (
@@ -29,13 +32,13 @@ const AnnouncementBottomSheet = memo(function AnnouncementBottomSheet({
     >
       <AnnouncementModalOverlay>
         <AnnouncementModalBackdrop onPress={onClose} />
-        <AnnouncementModalCard>
+        <AnnouncementModalCard style={{ paddingBottom: insets.bottom + 20 }}>
           <ScrollView
             contentContainerStyle={{ paddingBottom: 8, flexGrow: 1 }}
             showsVerticalScrollIndicator={false}
           >
             <View style={{ alignItems: 'center', marginBottom: 16 }}>
-              <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: '#eee' }} />
+              <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: T.color.line }} />
             </View>
 
             {hasImage ? (

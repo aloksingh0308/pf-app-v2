@@ -1,8 +1,12 @@
-import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import { PRIMARY_BUTTON_STYLE } from '@/components/common/AppButton';
+import AppearIn from '@/components/common/AppearIn';
+import { T } from '@/constants/tokens';
+import PageHeader, { TabScreen } from '@/components/common/PageHeader';
 import AppImage from '@/components/AppImage';
 import CancelOrderButton from '@/components/CancelOrderButton';
 import { getMenuItems } from '@/services/menuService';
 import { findRestaurantByAnyId } from '@/services/restaurantService';
+import { setActiveRestaurant } from '@/services/restaurantContext';
 import { userService } from '@/services/userService';
 import {
   getMyOrdersPage,
@@ -20,8 +24,8 @@ import { router } from 'expo-router';
 import { shareInvoicePdf } from '@/utils/invoice';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Linking, Modal } from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useDispatch, useSelector } from 'react-redux';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../services/alertService';
 import { RootState } from '../../store';
@@ -29,6 +33,7 @@ import { OrderType } from '../../types/enums';
 import { isOrderActive, isOrderCancelled, isOrderDelivered, orderStatusColors, orderStatusLabel } from '@/utils/orderStatus';
 import { buildCartItemFromProduct, getSelectedProductVariant } from '@/utils/productVariants';
 import { usePolling } from '@/utils/polling';
+import { gstRows } from '@/utils/gst';
 import { isRateLimited } from '@/utils/apiClient';
 
 const ORDERS_POLL_MS = 30_000;
@@ -85,6 +90,7 @@ function formatScheduledDateKey(dateKey: unknown) {
 }
 
 const OrderHistoryScreen = () => {
+  const insets = useSafeAreaInsets();
   const CAFE_PHONE_NUMBER = '8957246131';
   const user = useSelector((state: RootState) => state.auth.user);
   const dispatch = useDispatch();
@@ -127,7 +133,7 @@ const OrderHistoryScreen = () => {
     return `item-${index}-${String(item?.name || 'unknown').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
   };
 
-  const getReviewableOrderItems = (order: any) => {
+  const getReviewableOrderItems = (order: any): Array<any> => {
     const seen = new Set<string>();
     return (Array.isArray(order?.items) ? order.items : []).reduce((acc: Array<any>, item: any, index: number) => {
       const productId = getReviewProductId(item, index);
@@ -221,9 +227,12 @@ const OrderHistoryScreen = () => {
         return;
       }
 
+      // The menu fetch reads the *active* restaurant (Home makes the featured one active) —
+      // point it at this order's restaurant first, or the wrong menu comes back.
+      setActiveRestaurant(order?.restaurant);
       const [restaurant, liveMenuItems] = await Promise.all([
         findRestaurantByAnyId(restaurantId),
-        getMenuItems(),
+        getMenuItems({ fresh: true }),
       ]);
 
       if (!restaurant) {
@@ -299,8 +308,11 @@ const OrderHistoryScreen = () => {
   // --- REORDER HANDLER ---
   const handleReorder = async (order: any) => {
     try {
-      // Fetch live menu items to ensure product info is up-to-date
-      const liveMenuItems = await getMenuItems();
+      // Fetch live menu items to ensure product info is up-to-date — from this order's
+      // restaurant, not whichever one is active (see handleEditOrder).
+      if (!order?.restaurant?.orgSlug) throw new Error('This restaurant is no longer available.');
+      setActiveRestaurant(order.restaurant);
+      const liveMenuItems = await getMenuItems({ fresh: true });
       const liveMenuByKey = new Map(
         liveMenuItems.map((item) => [String(item.firebaseId || item.id), item])
       );
@@ -602,7 +614,8 @@ const OrderHistoryScreen = () => {
       : item.paymentStatus === 'PAID' || orderTotal === 0 ? 'Fully paid' : 'Amount due';
     const isScheduledOrder = item?.isScheduledOrder === true || String(item?.orderSource || '').toLowerCase() === 'scheduled';
     // Only show for home delivery orders
-    const showTrackOrder = !isScheduledOrder && String(item.orderType) === OrderType.HOME_DELIVERY;
+    // Every order type tracks: delivery shows the map, takeaway / dine-in show status details.
+    const showTrackOrder = !isScheduledOrder;
     // Calculate distance using cafe and delivery location
     let distanceKm = 0;
     // Set your cafe's coordinates here
@@ -634,7 +647,7 @@ const OrderHistoryScreen = () => {
     const hiddenItemCount = Math.max(0, allItems.length - MAX_VISIBLE_ITEMS);
 
     return (
-      <Animated.View entering={FadeInDown.delay(index * 60).springify().damping(18)}>
+      <AppearIn index={index}>
       <Card>
         <CardPressArea disabled onPress={() => router.push(`/order/${item.id}`)}>
           <RestaurantHeader
@@ -692,17 +705,19 @@ const OrderHistoryScreen = () => {
             >
               <BillToggleText>
                 <TotalLabel>Order total</TotalLabel>
-                <BillToggleHint>{billExpanded ? 'Hide price breakdown' : isCancelled ? 'View price breakdown' : `${balanceLabel}${amountDue > 0 ? ` · ₹${amountDue.toFixed(2)}` : ''} · View breakdown`}</BillToggleHint>
+                <BillToggleHint>{billExpanded ? 'Hide price breakdown' : isCancelled ? 'View price breakdown' : `${balanceLabel}${amountDue > 0 && Math.abs(amountDue - orderTotal) >= 0.01 ? ` · ₹${amountDue.toFixed(2)}` : ''} · View breakdown`}</BillToggleHint>
               </BillToggleText>
               <TotalAmount>₹{orderTotal.toFixed(2)}</TotalAmount>
               <Ionicons name={billExpanded ? 'chevron-up' : 'chevron-down'} size={18} color="#8a8f98" style={{ marginLeft: 6 }} />
             </BillToggle>
             {billExpanded && (
               <BillDetails>
-            <BillRow><PricingText>Item subtotal</PricingText><BillValue>{item.pricing?.subtotal != null ? `₹${Number(item.pricing.subtotal).toFixed(2)}` : 'Unavailable'}</BillValue></BillRow>
+            <BillRow><PricingText>{item.pricing?.taxIncluded ? 'Item subtotal (incl. GST)' : 'Item subtotal'}</PricingText><BillValue>{item.pricing?.subtotal != null ? `₹${Number(item.pricing.subtotal).toFixed(2)}` : 'Unavailable'}</BillValue></BillRow>
             <BillRow><PricingText>Discount</PricingText><BillValue style={Number(item.pricing?.discount || 0) > 0 ? { color: '#25854c' } : undefined}>{Number(item.pricing?.discount || 0) > 0 ? '−' : ''}₹{Number(item.pricing?.discount || 0).toFixed(2)}</BillValue></BillRow>
             <BillRow><PricingText>Packaging charges</PricingText><BillValue>₹{Number(item.pricing?.packagingCharge || 0).toFixed(2)}</BillValue></BillRow>
-            {Number(item.pricing?.tax || 0) > 0 && <BillRow><PricingText>Taxes</PricingText><BillValue>₹{Number(item.pricing.tax).toFixed(2)}</BillValue></BillRow>}
+            {gstRows(Number(item.pricing?.tax || 0), item.pricing?.taxable ?? Number(item.pricing?.subtotal || 0) - Number(item.pricing?.discount || 0)).map(([label, value]) => (
+              <BillRow key={label}><PricingText>{item.pricing?.taxIncluded ? `${label} (included)` : label}</PricingText><BillValue>₹{value.toFixed(2)}</BillValue></BillRow>
+            ))}
             {Number(item.pricing?.deliveryFee || 0) > 0 && <BillRow><PricingText>Delivery fee</PricingText><BillValue>₹{Number(item.pricing.deliveryFee).toFixed(2)}</BillValue></BillRow>}
             {Number(item.pricing?.serviceCharge || 0) > 0 && <BillRow><PricingText>Service charge</PricingText><BillValue>₹{Number(item.pricing.serviceCharge).toFixed(2)}</BillValue></BillRow>}
             {Number(item.pricing?.roundOff || 0) !== 0 && <BillRow><PricingText>Rounding adjustment</PricingText><BillValue>{Number(item.pricing.roundOff) < 0 ? '−' : '+'}₹{Math.abs(Number(item.pricing.roundOff)).toFixed(2)}</BillValue></BillRow>}
@@ -735,15 +750,15 @@ const OrderHistoryScreen = () => {
                   },
                 })}
               >
-                <ReviewButtonText>Track Order</ReviewButtonText>
+                <ReviewButtonText>Track order</ReviewButtonText>
               </ReviewButton>
               ) : null}
             />
           )}
           {!isDelivered && !isCancelled && (
             <CallButton onPress={() => handleCallCafe(restaurant?.phone)}>
-              <Ionicons name="call-outline" size={16} color="#fff" />
-              <CallButtonText>Call Restaurant</CallButtonText>
+              <Ionicons name="call-outline" size={16} color={T.color.success} />
+              <CallButtonText>Call restaurant</CallButtonText>
             </CallButton>
           )}
 
@@ -797,7 +812,7 @@ const OrderHistoryScreen = () => {
           )}
         </ActionsRow>
       </Card>
-      </Animated.View>
+      </AppearIn>
     );
   };
 
@@ -853,7 +868,7 @@ const OrderHistoryScreen = () => {
         onRequestClose={closeReviewModal}
       >
         <ReviewModalOverlay>
-          <ReviewModalCard>
+          <ReviewModalCard style={{ paddingBottom: insets.bottom + 22 }}>
             <ReviewModalTitle>Rate Delivered Items</ReviewModalTitle>
             <ReviewModalSubtitle>Rate every item and add one order-level review.</ReviewModalSubtitle>
             <ReviewProgressText>Rated {ratedItemsCount}/{reviewableModalItems.length} items</ReviewProgressText>
@@ -989,7 +1004,7 @@ function getCreatedTime(createdAt: any) {
 }
 
 
-const Container = styled(PageScreen)`
+const Container = styled(TabScreen)`
   flex: 1;
   background-color: #faf7f4;
 `;
@@ -1016,9 +1031,9 @@ const Card = styled.View.attrs({
   border: 1px solid #f1ebe5;
 `;
 
-const CardPressArea = styled.TouchableOpacity``;
+const CardPressArea = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })``;
 
-const RestaurantHeader = styled.TouchableOpacity`
+const RestaurantHeader = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex-direction: row;
   align-items: center;
   padding-bottom: 12px;
@@ -1134,7 +1149,7 @@ const PricingSection = styled.View`
   border: 1px solid #eee6df;
   gap: 8px;
 `;
-const BillToggle = styled.TouchableOpacity`
+const BillToggle = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex-direction: row;
   align-items: center;
 `;
@@ -1225,9 +1240,11 @@ const ActionsRow = styled.View`
   gap: 8px;
 `;
 
-const CallButton = styled.TouchableOpacity`
+const CallButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
-  background-color: #2e7d32;
+  background-color: #ffffff;
+  border-width: 1px;
+  border-color: ${T.color.line};
   border-radius: 10px;
   min-height: 42px;
   padding: 0 12px;
@@ -1238,7 +1255,7 @@ const CallButton = styled.TouchableOpacity`
 `;
 
 const CallButtonText = styled.Text`
-  color: #fff;
+  color: ${T.color.ink};
   font-weight: 700;
   font-size: 13px;
 `;
@@ -1248,7 +1265,7 @@ const ListFooter = styled.View`
   align-items: center;
 `;
 
-const LoadMoreButton = styled.TouchableOpacity`
+const LoadMoreButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding: 10px 16px;
   border-radius: 20px;
   border-width: 1px;
@@ -1266,7 +1283,7 @@ const EndOfListText = styled.Text`
   font-size: 12px;
 `;
 
-const InvoiceIconButton = styled.TouchableOpacity`
+const InvoiceIconButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: 42px;
   height: 42px;
   border-radius: 10px;
@@ -1277,7 +1294,7 @@ const InvoiceIconButton = styled.TouchableOpacity`
   justify-content: center;
 `;
 
-const InvoiceButton = styled.TouchableOpacity`
+const InvoiceButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
   background-color: #f68712;
   border-radius: 10px;
@@ -1294,7 +1311,7 @@ const InvoiceButtonText = styled.Text`
   font-size: 14px;
 `;
 
-const ReviewButton = styled.TouchableOpacity`
+const ReviewButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
   background-color: #ffffff;
   border-width: 1px;
@@ -1392,7 +1409,7 @@ const RiderTagsRow = styled.View`
   flex-wrap: wrap;
 `;
 
-const RiderTagChip = styled.TouchableOpacity<{ selected: boolean }>`
+const RiderTagChip = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ selected: boolean }>`
   padding: 6px 10px;
   margin-right: 6px;
   margin-bottom: 6px;
@@ -1408,7 +1425,7 @@ const RiderTagText = styled.Text<{ selected: boolean }>`
   color: ${(p: { selected: boolean }) => (p.selected ? '#f68712' : '#555')};
 `;
 
-const StarButton = styled.TouchableOpacity`
+const StarButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding: 4px;
 `;
 
@@ -1422,7 +1439,7 @@ const ReviewInput = styled.TextInput`
   color: #222;
 `;
 
-const AttachImageButton = styled.TouchableOpacity`
+const AttachImageButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   margin-top: 12px;
   border-width: 1px;
   border-color: #f68712;
@@ -1458,10 +1475,10 @@ const ReviewModalActions = styled.View`
   gap: 10px;
 `;
 
-const CancelButton = styled.TouchableOpacity`
+const CancelButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
-  min-height: 44px;
-  border-radius: 10px;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
   border-width: 1px;
   border-color: #ddd;
   justify-content: center;
@@ -1473,11 +1490,11 @@ const CancelButtonText = styled.Text`
   font-weight: 600;
 `;
 
-const SubmitButton = styled.TouchableOpacity`
+const SubmitButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
-  min-height: 44px;
-  border-radius: 10px;
-  background-color: #f68712;
+  min-height: ${PRIMARY_BUTTON_STYLE.minHeight}px;
+  border-radius: ${PRIMARY_BUTTON_STYLE.borderRadius}px;
+  background-color: ${PRIMARY_BUTTON_STYLE.backgroundColor};
   justify-content: center;
   align-items: center;
 `;

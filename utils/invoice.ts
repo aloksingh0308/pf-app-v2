@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import { gstRows } from './gst';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
@@ -45,6 +46,8 @@ export type InvoiceOrder = {
     packagingCharge?: number;
     deliveryFee?: number;
     walletUsed?: number;
+    taxIncluded?: boolean;
+    taxable?: number;
   };
   restaurant?: { name?: string; address?: string; phone?: string; fssai?: string; gstNumber?: string } | null;
 };
@@ -89,7 +92,7 @@ export function buildInvoiceHtml(order: InvoiceOrder, customer: InvoiceCustomer 
   const roundOff = Number(pricing.roundOff || 0);
   const total = Number.isFinite(Number(order.total))
     ? Number(order.total)
-    : subtotal - discount + tax + serviceCharge + packagingCharge + deliveryFee + roundOff;
+    : subtotal - discount + (pricing.taxIncluded ? 0 : tax) + serviceCharge + packagingCharge + deliveryFee + roundOff;
   const walletUsed = Number(pricing.walletUsed || 0);
   const amountPaid = Math.max(Number(order.amountPaid || 0), order.paymentStatus === 'PAID' ? total : 0);
   const balance = Math.max(0, Math.round((total - amountPaid) * 100) / 100);
@@ -114,9 +117,14 @@ export function buildInvoiceHtml(order: InvoiceOrder, customer: InvoiceCustomer 
     })
     .join('');
 
-  const summary: Array<[string, number, string?]> = [['Item total', subtotal]];
+  const summary: Array<[string, number, string?]> = [[pricing.taxIncluded ? 'Item total (incl. GST)' : 'Item total', subtotal]];
   if (discount > 0) summary.push([pricing.couponCode ? `Discount (${pricing.couponCode})` : 'Discount', -discount, 'save']);
-  if (tax > 0) summary.push(['Taxes', tax]);
+  // Menu prices include GST: the GST is inside the item total — listed, never added.
+  summary.push(
+    ...gstRows(tax, pricing.taxable ?? subtotal - discount).map(
+      ([label, value]) => [pricing.taxIncluded ? `${label} (included)` : label, value] as [string, number]
+    )
+  );
   if (serviceCharge > 0) summary.push(['Service charge', serviceCharge]);
   if (packagingCharge > 0) summary.push(['Packaging charge', packagingCharge]);
   if (deliveryFee > 0) summary.push(['Delivery fee', deliveryFee]);

@@ -1,9 +1,9 @@
-import { AppColors } from '@/constants/appColors';
 import { AppStrings } from '@/constants/appStrings';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { T } from '@/constants/tokens';
 
 type Variant = 'offline' | 'server' | 'slow';
 
@@ -47,7 +47,7 @@ export default function OfflineScreen({ onRetry, retrying = false, variant = 'of
     <View style={[styles.container, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]} accessibilityRole="alert">
       <View style={styles.iconOuter}>
         <View style={styles.iconInner}>
-          <Ionicons name={copy.icon} size={52} color={AppColors.primary} />
+          <Ionicons name={copy.icon} size={52} color={T.color.brand} />
         </View>
       </View>
 
@@ -58,7 +58,7 @@ export default function OfflineScreen({ onRetry, retrying = false, variant = 'of
         <View style={styles.tips}>
           {copy.tips.map((tip) => (
             <View key={tip} style={styles.tipRow}>
-              <Ionicons name="checkmark-circle-outline" size={18} color={AppColors.primary} />
+              <Ionicons name="checkmark-circle-outline" size={18} color={T.color.brand} />
               <Text style={styles.tipText}>{tip}</Text>
             </View>
           ))}
@@ -70,7 +70,7 @@ export default function OfflineScreen({ onRetry, retrying = false, variant = 'of
         accessibilityLabel={copy.action}
         disabled={retrying}
         onPress={onRetry}
-        style={({ pressed }) => [styles.button, (pressed || retrying) && { opacity: 0.85 }]}
+        style={({ pressed }) => [styles.button, (pressed || retrying) && { opacity: 0.8 }]}
       >
         {retrying ? <ActivityIndicator color="#fff" /> : <Ionicons name="refresh" size={18} color="#fff" />}
         <Text style={styles.buttonText}>{retrying ? 'Checking…' : copy.action}</Text>
@@ -82,19 +82,19 @@ export default function OfflineScreen({ onRetry, retrying = false, variant = 'of
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
-  iconOuter: { width: 140, height: 140, borderRadius: 70, backgroundColor: '#fff4e8', alignItems: 'center', justifyContent: 'center' },
+  iconOuter: { width: 140, height: 140, borderRadius: 70, backgroundColor: T.color.brandSoft, alignItems: 'center', justifyContent: 'center' },
   iconInner: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#ffe6cc', alignItems: 'center', justifyContent: 'center' },
-  title: { marginTop: 24, fontSize: 22, fontWeight: '800', color: AppColors.textPrimary, textAlign: 'center' },
-  message: { marginTop: 8, fontSize: 14.5, lineHeight: 21, color: AppColors.textSecondary, textAlign: 'center' },
-  tips: { marginTop: 22, alignSelf: 'stretch', backgroundColor: '#fafafa', borderRadius: 16, padding: 16, gap: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: '#ececec' },
+  title: { marginTop: 24, fontSize: 22, fontWeight: '800', color: T.color.ink, textAlign: 'center' },
+  message: { marginTop: 8, fontSize: 14.5, lineHeight: 21, color: T.color.muted, textAlign: 'center' },
+  tips: { marginTop: 22, alignSelf: 'stretch', backgroundColor: T.color.canvas, borderRadius: 16, padding: 16, gap: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: '#ececec' },
   tipRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  tipText: { fontSize: 13.5, color: AppColors.textDark },
+  tipText: { fontSize: 13.5, color: T.color.inkSoft },
   button: {
     marginTop: 26,
     minWidth: 180,
     minHeight: 50,
     borderRadius: 14,
-    backgroundColor: AppColors.primary,
+    backgroundColor: T.color.brand,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -102,5 +102,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  hint: { marginTop: 12, fontSize: 12, color: AppColors.muted, textAlign: 'center' },
+  hint: { marginTop: 12, fontSize: 12, color: T.color.faint, textAlign: 'center' },
 });

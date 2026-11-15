@@ -118,7 +118,7 @@ export function orderStatusMessage(status: unknown, orderType?: 'delivery' | 'ta
     case 'OUT_FOR_DELIVERY':
       return 'Your order is on the way';
     case 'DELIVERED':
-      return orderType === 'takeaway' ? 'Order picked up — enjoy your meal!' : 'Order delivered — enjoy your meal!';
+      return orderType === 'takeaway' ? 'Order picked up — enjoy your meal!' : orderType === 'dinein' ? 'Order served — enjoy your meal!' : 'Order delivered — enjoy your meal!';
     case 'CANCELLED':
       return isRejected(status) ? 'The restaurant could not accept this order' : 'This order was cancelled';
     case 'SCHEDULED':

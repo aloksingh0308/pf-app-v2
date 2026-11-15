@@ -119,7 +119,7 @@ const ActionsContainer = styled.View<{ twoColumn: boolean }>`
   flex-direction: ${(props: { twoColumn: boolean }) => (props.twoColumn ? 'row' : 'column')};
 `;
 
-const ActionButton = styled.TouchableOpacity<{
+const ActionButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{
   twoColumn: boolean;
   addLeftBorder: boolean;
   addTopBorder: boolean;

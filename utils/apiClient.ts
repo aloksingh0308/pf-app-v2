@@ -70,7 +70,13 @@ interface ApiFailure {
  * public/customer-facing endpoints live under `/public/...`. Attaches the customer JWT
  * (see auth/customerJwt.ts on the backend) automatically when one is stored.
  */
-async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, isFormData = false): Promise<T> {
+async function send<T>(
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+  isFormData = false,
+  extraHeaders: Record<string, string> = {}
+): Promise<ApiSuccess<T>> {
   if (method === 'GET' && rateLimitRemainingMs() > 0) {
     throw new ApiError(429, RATE_LIMITED_MESSAGE, RATE_LIMITED_CODE, Math.ceil(rateLimitRemainingMs() / 1000));
   }
@@ -84,6 +90,7 @@ async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: str
         // boundary automatically, which an explicit `application/json` header would break.
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...extraHeaders,
       },
       body: isFormData ? (body as FormData) : body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -123,12 +130,73 @@ async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: str
     const fallback = res.status >= 502 && res.status <= 504 ? 'The server is restarting or busy. Please try again in a moment.' : 'Something went wrong. Please try again.';
     throw new ApiError(res.status, failure?.message || fallback, failure?.code, failure?.retryAfterSeconds);
   }
-  return (json as ApiSuccess<T>).data;
+  return json as ApiSuccess<T>;
+}
+
+async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, isFormData = false): Promise<T> {
+  return (await send<T>(method, path, body, isFormData)).data;
+}
+
+// Idempotency-Key per pending request (path + body). Kept until the server gives a definite
+// answer, so when the user retries after a timeout / dropped connection / 5xx the SAME key
+// goes out and the backend (middleware/idempotency.ts) returns the first result instead of
+// placing a second order or sending a second OTP. A success or a 4xx clears it, so the next
+// real attempt — even with an identical cart — gets a fresh key.
+const pendingIdempotencyKeys = new Map<string, string>();
+const IDEMPOTENCY_IN_PROGRESS_CODE = 'IDEMPOTENCY_IN_PROGRESS';
+
+function newIdempotencyKey(): string {
+  let random = '';
+  for (let i = 0; i < 4; i++) random += Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, '0');
+  return `${Date.now().toString(36)}-${random}`;
+}
+
+async function postIdempotent<T>(path: string, body?: unknown): Promise<T> {
+  const fingerprint = `${path}|${JSON.stringify(body ?? null)}`;
+  const key = pendingIdempotencyKeys.get(fingerprint) ?? newIdempotencyKey();
+  pendingIdempotencyKeys.set(fingerprint, key);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const data = (await send<T>('POST', path, body, false, { 'Idempotency-Key': key })).data;
+      pendingIdempotencyKeys.delete(fingerprint);
+      return data;
+    } catch (error) {
+      const apiError = error instanceof ApiError ? error : null;
+      // The first try is still running on the server — wait for it rather than erroring.
+      if (apiError?.status === 409 && apiError.code === IDEMPOTENCY_IN_PROGRESS_CODE && attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, (apiError.retryAfterSeconds || 2) * 1000));
+        continue;
+      }
+      // Outcome unknown (never reached us / server error / still running): keep the key for the retry.
+      const outcomeUnknown = !apiError || apiError.status === 0 || apiError.status >= 500 || apiError.code === IDEMPOTENCY_IN_PROGRESS_CODE;
+      if (!outcomeUnknown) pendingIdempotencyKeys.delete(fingerprint);
+      throw error;
+    }
+  }
+}
+
+/** Pagination `meta` the backend sends with a paged list (utils/pagination.ts there). */
+export type PageMeta = { page: number; pageSize: number; total: number; totalPages: number };
+export type ApiPage<T> = { items: T[]; meta: PageMeta | null; hasMore: boolean };
+
+/** GET one page of a list endpoint that supports `?page=&pageSize=`. A backend that doesn't
+ *  page that endpoint yet returns the whole array (no meta) — that comes back as the only page. */
+async function getPage<T>(path: string, page: number, pageSize: number): Promise<ApiPage<T>> {
+  const separator = path.includes('?') ? '&' : '?';
+  const json = await send<T[]>('GET', `${path}${separator}page=${page}&pageSize=${pageSize}`);
+  const meta = (json as ApiSuccess<T[]> & { meta?: Partial<PageMeta> }).meta;
+  const items = Array.isArray(json.data) ? json.data : [];
+  if (!meta || typeof meta.totalPages !== 'number') return { items, meta: null, hasMore: false };
+  return { items, meta: meta as PageMeta, hasMore: page < meta.totalPages };
 }
 
 export const apiClient = {
   get: <T>(path: string) => request<T>('GET', path),
+  getPage,
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  /** POST that must not run twice (place order, send/verify OTP) — see postIdempotent. */
+  postIdempotent,
+  put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),
   postForm: <T>(path: string, formData: FormData) => request<T>('POST', path, formData, true),

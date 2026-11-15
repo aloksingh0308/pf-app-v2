@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { ComponentProps } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { T } from '@/constants/tokens';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export type PageHeaderAction = {
@@ -26,6 +27,12 @@ export function PageScreen(props: ComponentProps<typeof SafeAreaView>) {
   return <SafeAreaView {...props} edges={['left', 'right', 'bottom']} />;
 }
 
+/** PageScreen for a bottom-tab screen: the tab bar already sits above the system nav bar,
+ *  so a bottom inset here left an empty band that cut the scrolling content off. */
+export function TabScreen(props: ComponentProps<typeof SafeAreaView>) {
+  return <SafeAreaView {...props} edges={['left', 'right']} />;
+}
+
 /** Keep this outside scrolling content. Equal side slots center the title on the screen. */
 export default function PageHeader({ title, onBack, showBack = true, backDisabled = false, actions = [] }: Props) {
   const insets = useSafeAreaInsets();
@@ -42,7 +49,7 @@ export default function PageHeader({ title, onBack, showBack = true, backDisable
             disabled={backDisabled}
             onPress={onBack || (() => router.canGoBack() ? router.back() : router.replace('/(tabs)'))}
             style={({ pressed }) => [styles.button, (pressed || backDisabled) && styles.dimmed]}
-          ><Ionicons name="chevron-back" size={24} color="#252a36" /></Pressable>}
+          ><Ionicons name="chevron-back" size={24} color={T.color.ink} /></Pressable>}
         </View>
         <Text accessibilityRole="header" numberOfLines={1} ellipsizeMode="tail" style={styles.title}>{title}</Text>
         <View style={[styles.side, styles.right, { width: sideWidth }]}>
@@ -54,7 +61,7 @@ export default function PageHeader({ title, onBack, showBack = true, backDisable
             disabled={action.disabled}
             onPress={action.onPress}
             style={({ pressed }) => [styles.button, (pressed || action.disabled) && styles.dimmed]}
-          ><Ionicons name={action.icon} size={23} color={action.color || '#ee7513'} /></Pressable>)}
+          ><Ionicons name={action.icon} size={23} color={action.color || T.color.brand} /></Pressable>)}
         </View>
       </View>
     </View>
@@ -62,11 +69,11 @@ export default function PageHeader({ title, onBack, showBack = true, backDisable
 }
 
 const styles = StyleSheet.create({
-  safeArea: { alignSelf: 'stretch', backgroundColor: '#fff', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#eee5dc', zIndex: 1 },
+  safeArea: { alignSelf: 'stretch', backgroundColor: T.color.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: T.color.line, zIndex: 1 },
   row: { minHeight: 56, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 },
   side: { flexDirection: 'row', alignItems: 'center' },
   right: { justifyContent: 'flex-end' },
   button: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22 },
   dimmed: { opacity: 0.45 },
-  title: { flex: 1, textAlign: 'center', fontSize: 20, fontWeight: '700', color: '#252a36', paddingVertical: 12 },
+  title: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '700', color: T.color.ink, paddingVertical: 12 },
 });

@@ -193,7 +193,9 @@ const ProfileScreen = () => {
                     </Pressable>
                 </Animated.View>
 
-                <Animated.View entering={FadeInDown.delay(180).springify().damping(16)}>
+                {/* Fade as one layer: on Android the elevated SectionCards inside otherwise draw
+                    their shadows as dark boxes while the opacity animates. */}
+                <Animated.View entering={FadeInDown.delay(180).springify().damping(16)} needsOffscreenAlphaCompositing>
                     <SectionTitle>Personal details</SectionTitle>
                     <SectionCard>
                         <ListRow icon="person-outline" title="Full name" subtitle={user.name || 'Not added'} />
@@ -204,11 +206,27 @@ const ProfileScreen = () => {
                         {memberSince ? <ListRow icon="ribbon-outline" title="Member since" subtitle={memberSince} /> : null}
                     </SectionCard>
 
+                    <SectionTitle>Saved</SectionTitle>
+                    <SectionCard>
+                        <ListRow icon="heart-outline" title="My favourites" subtitle="Restaurants and dishes you've saved" onPress={() => router.push('/user/favorites' as never)} />
+                    </SectionCard>
+
                     <SectionTitle>Wallet & rewards</SectionTitle>
                     <SectionCard>
                         <ListRow icon="wallet-outline" title="Wallet history" value={`₹${Number(user.walletBalance || 0).toFixed(2)}`} onPress={() => router.push('/user/wallet-history' as never)} />
                         <ListRow icon="ticket-outline" title="My rewards" value={loadingRewards ? undefined : `${rewards.length}`} loading={loadingRewards} onPress={() => router.push('/user/rewards' as never)} />
                         <ListRow icon="gift-outline" title="Refer & earn" subtitle={user.referralCode ? `Code: ${user.referralCode}` : undefined} onPress={() => router.push('/user/refer-earn' as never)} />
+                        <ListRow icon="storefront-outline" title="Refer a restaurant" subtitle="Get ₹1,000 in your wallet when they join" onPress={() => router.push('/user/refer-restaurant' as never)} />
+                    </SectionCard>
+
+                    <SectionTitle>Notifications</SectionTitle>
+                    <SectionCard>
+                        <ListRow
+                            icon="notifications-outline"
+                            title="Notification preferences"
+                            subtitle="Order updates, offers and reminders"
+                            onPress={() => router.push('/user/notification-preferences' as never)}
+                        />
                     </SectionCard>
 
                     <SectionTitle>Account</SectionTitle>
@@ -238,7 +256,7 @@ const styles = StyleSheet.create({
         borderRadius: 20,
         padding: 16,
         borderWidth: StyleSheet.hairlineWidth,
-        borderColor: '#e6e6ea',
+        borderColor: Palette.hairline,
     },
     avatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: Palette.hairline, borderWidth: 2, borderColor: Palette.primary },
     name: { fontSize: 19, fontWeight: '800', color: Palette.text },
@@ -253,7 +271,7 @@ const styles = StyleSheet.create({
         borderRadius: 16,
         paddingVertical: 14,
         borderWidth: StyleSheet.hairlineWidth,
-        borderColor: '#e6e6ea',
+        borderColor: Palette.hairline,
     },
     stat: { flex: 1, alignItems: 'center' },
     statValue: { fontSize: 18, fontWeight: '800', color: Palette.primary },

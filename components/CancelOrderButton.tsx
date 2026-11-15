@@ -70,7 +70,7 @@ export default function CancelOrderButton({ orderId, cancellableUntil, onCancell
     ]);
 
   return (
-    <TouchableOpacity accessibilityRole="button" style={styles.button} onPress={confirm} disabled={busy}>
+    <TouchableOpacity activeOpacity={0.8} accessibilityRole="button" style={styles.button} onPress={confirm} disabled={busy}>
       {busy ? (
         <ActivityIndicator size="small" color="#b42318" />
       ) : (

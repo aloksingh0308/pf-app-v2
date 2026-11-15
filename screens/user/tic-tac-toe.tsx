@@ -4,28 +4,7 @@ import React, { useMemo, useState } from 'react';
 import { Animated, Easing, Modal } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import styled from 'styled-components/native';
-import {
-  InterstitialAd,
-  AdEventType,
-  TestIds
-} from 'react-native-google-mobile-ads';
-
-
-const INTERSTITIAL_AD_UNIT_ID = String(
-  process.env.EXPO_PUBLIC_INTERSTITIAL_AD_UNIT_ID
-  || ''
-).trim();
-
-const adUnitId = __DEV__
-  ? TestIds.INTERSTITIAL
-  : INTERSTITIAL_AD_UNIT_ID;
-
-const interstitial = InterstitialAd.createForAdRequest(
-  adUnitId,
-  {
-    requestNonPersonalizedAdsOnly: true,
-  }
-);
+import { useInterstitialAd } from '@/hooks/useInterstitialAd';
 
 type Player = 'X' | 'O';
 type Cell = Player | null;
@@ -135,7 +114,7 @@ export default function TicTacToeScreen() {
   const celebrationScale = useMemo(() => new Animated.Value(0.7), []);
   const celebrationOpacity = useMemo(() => new Animated.Value(0), []);
   const celebrationTranslateY = useMemo(() => new Animated.Value(24), []);
-  const [isAdLoaded, setIsAdLoaded] = useState(false);
+  const showAdThen = useInterstitialAd();
 
   const [score, setScore] = useState({ X: 0, O: 0, draw: 0 });
 
@@ -157,48 +136,12 @@ export default function TicTacToeScreen() {
       return;
     }
 
-    // Free restarts finished
-    if (isAdLoaded) {
-      interstitial.show();
-      const unsubscribe = interstitial.addAdEventListener(
-        AdEventType.CLOSED,
-        () => {
-          unsubscribe();
-          setUsedFreeRestarts(0);
-          resetGame();
-        },
-      );
-    } else {
-      // If ad isn't loaded don't block gameplay
+    // Free restarts finished — show an ad (skipped if none is ready) then restart
+    showAdThen(() => {
       setUsedFreeRestarts(0);
       resetGame();
-      interstitial.load();
-    }
+    });
   };
-
-  React.useEffect(() => {
-    const loadedListener = interstitial.addAdEventListener(
-      AdEventType.LOADED,
-      () => {
-        setIsAdLoaded(true);
-      },
-    );
-
-    const closedListener = interstitial.addAdEventListener(
-      AdEventType.CLOSED,
-      () => {
-        setIsAdLoaded(false);
-        interstitial.load(); // preload next ad
-      },
-    );
-
-    interstitial.load();
-
-    return () => {
-      loadedListener();
-      closedListener();
-    };
-  }, []);
 
   const resetGame = () => {
     setBoard(Array(9).fill(null));
@@ -360,7 +303,7 @@ export default function TicTacToeScreen() {
               return (
                 <CellSlot key={index}>
                   <TileButton
-                    activeOpacity={0.85}
+                    activeOpacity={0.8}
                     onPress={() => handleCellPress(index)}
                     accessibilityRole="button"
                     accessibilityLabel={`Cell ${index + 1}${cell ? `, ${cell}` : ', empty'}`}
@@ -393,7 +336,7 @@ export default function TicTacToeScreen() {
           </CelebrationWrap>
         ) : null}
 
-        <ResetButton onPress={handleRestartRequest} activeOpacity={0.85}>
+        <ResetButton onPress={handleRestartRequest} activeOpacity={0.8}>
           <ResetText>{winner || isDraw ? 'Play Again' : 'Restart Game'}</ResetText>
         </ResetButton>
         <ChanceText>{AppStrings.game.freeRestartLabel.replace('{COUNT}', String(freeRestartsLeft))}</ChanceText>
@@ -505,7 +448,7 @@ const ModeRow = styled.View`
   padding: 4px;
 `;
 
-const ModeButton = styled.TouchableOpacity<{ active: boolean }>`
+const ModeButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ active: boolean }>`
   flex: 1;
   padding: 11px;
   border-radius: 11px;
@@ -622,7 +565,7 @@ const CellSlot = styled.View`
   padding: 5px;
 `;
 
-const TileButton = styled.TouchableOpacity`
+const TileButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
 `;
 
@@ -666,7 +609,7 @@ const CelebrationSubTitle = styled.Text`
   color: #4b5878;
 `;
 
-const ResetButton = styled.TouchableOpacity`
+const ResetButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background-color: #f68712;
   margin-top: 18px;
   padding: 15px;
@@ -713,7 +656,7 @@ const ModalActions = styled.View`
   margin-top: 16px;
 `;
 
-const ModalSecondaryButton = styled.TouchableOpacity`
+const ModalSecondaryButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
   border-width: 1px;
   border-color: #ddd;
@@ -729,7 +672,7 @@ const ModalSecondaryText = styled.Text`
   font-weight: 700;
 `;
 
-const ModalPrimaryButton = styled.TouchableOpacity`
+const ModalPrimaryButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex: 1;
   background-color: #f68712;
   border-radius: 8px;

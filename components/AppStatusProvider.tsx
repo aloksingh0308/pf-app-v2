@@ -37,8 +37,10 @@ export default function AppStatusProvider({ children }: Props) {
     }
     hasSubscribedRef.current = true;
 
+    // Polled every minute — keep the old object when nothing changed so context consumers
+    // don't re-render on every tick.
     const unsubscribe = subscribeToAppStatus((config) => {
-      setAppStatus(config);
+      setAppStatus((prev) => (JSON.stringify(prev) === JSON.stringify(config) ? prev : config));
     });
 
     return () => {

@@ -1,5 +1,7 @@
 export const AppColors = {
   primary: '#f68712',
+  /** Every primary call-to-action button (see components/common/AppButton.tsx). */
+  cta: '#ff7500',
   white: '#ffffff',
   background: '#ffffff',
   textPrimary: '#1a1a1a',

@@ -1,8 +1,8 @@
-import { AppColors } from '@/constants/appColors';
 import Ionicons from '@react-native-vector-icons/ionicons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Modal, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { T } from '@/constants/tokens';
 
 /**
  * Date-of-birth field + calendar sheet. Pure JS (no native date picker needed). Birthdays
@@ -35,9 +35,11 @@ type Props = {
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  /** Overrides for the closed field, e.g. to match a screen's own inputs. */
+  fieldStyle?: StyleProp<ViewStyle>;
 };
 
-export default function DateOfBirthPicker({ value, onChange, placeholder = 'Date of Birth (Optional)', disabled = false }: Props) {
+export default function DateOfBirthPicker({ value, onChange, placeholder = 'Date of Birth (Optional)', disabled = false, fieldStyle }: Props) {
   const insets = useSafeAreaInsets();
   const today = new Date();
   const latestYear = today.getFullYear() - MIN_YEARS_OLD;
@@ -86,15 +88,15 @@ export default function DateOfBirthPicker({ value, onChange, placeholder = 'Date
         accessibilityLabel={value ? `Date of birth, ${value}. Change` : 'Choose date of birth'}
         disabled={disabled}
         onPress={openPicker}
-        style={({ pressed }) => [styles.field, pressed && { borderColor: AppColors.primary }, disabled && { opacity: 0.6 }]}
+        style={({ pressed }) => [styles.field, fieldStyle, pressed && { borderColor: T.color.brand }, disabled && { opacity: 0.6 }]}
       >
         <Text style={[styles.fieldText, !value && styles.placeholder]}>{value || placeholder}</Text>
         {value && !disabled ? (
           <Pressable accessibilityLabel="Clear date of birth" hitSlop={10} onPress={() => onChange('')}>
-            <Ionicons name="close-circle" size={20} color="#b0b0b0" />
+            <Ionicons name="close-circle" size={20} color={T.color.faint} />
           </Pressable>
         ) : (
-          <Ionicons name="calendar-outline" size={20} color={AppColors.primary} />
+          <Ionicons name="calendar-outline" size={20} color={T.color.brand} />
         )}
       </Pressable>
 
@@ -173,13 +175,13 @@ export default function DateOfBirthPicker({ value, onChange, placeholder = 'Date
               <>
                 <View style={styles.monthNav}>
                   <Pressable accessibilityLabel="Previous month" hitSlop={10} onPress={() => shiftMonth(-1)}>
-                    <Ionicons name="chevron-back" size={22} color={AppColors.textPrimary} />
+                    <Ionicons name="chevron-back" size={22} color={T.color.ink} />
                   </Pressable>
                   <Text style={styles.monthNavText}>
                     {MONTHS[draft.month]} {draft.year}
                   </Text>
                   <Pressable accessibilityLabel="Next month" hitSlop={10} onPress={() => shiftMonth(1)}>
-                    <Ionicons name="chevron-forward" size={22} color={AppColors.textPrimary} />
+                    <Ionicons name="chevron-forward" size={22} color={T.color.ink} />
                   </Pressable>
                 </View>
                 <View style={styles.grid}>
@@ -222,9 +224,9 @@ const styles = StyleSheet.create({
   field: {
     minHeight: 52,
     borderWidth: 1,
-    borderColor: AppColors.inputBorder,
+    borderColor: T.color.line,
     borderRadius: 8,
-    backgroundColor: AppColors.background,
+    backgroundColor: T.color.surface,
     paddingHorizontal: 14,
     marginBottom: 12,
     alignSelf: 'stretch',
@@ -232,30 +234,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  fieldText: { fontSize: 16, color: AppColors.textPrimary },
-  placeholder: { color: '#888' },
+  fieldText: { fontSize: 16, color: T.color.ink },
+  placeholder: { color: T.color.faint },
   shade: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 18, paddingTop: 10 },
-  handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: '#e0e0e0', marginBottom: 12 },
-  sheetTitle: { fontSize: 18, fontWeight: '800', color: AppColors.textPrimary, textAlign: 'center' },
+  handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: T.color.line, marginBottom: 12 },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: T.color.ink, textAlign: 'center' },
   crumbs: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 12 },
-  crumb: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: '#f4f4f5' },
-  crumbActive: { backgroundColor: '#fff0e3' },
-  crumbText: { fontSize: 14, fontWeight: '700', color: AppColors.textSecondary },
-  crumbTextActive: { color: AppColors.primary },
-  stepHint: { marginTop: 14, marginBottom: 8, fontSize: 12.5, fontWeight: '700', color: AppColors.muted, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 0.6 },
+  crumb: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: T.color.canvas },
+  crumbActive: { backgroundColor: T.color.brandSoft },
+  crumbText: { fontSize: 14, fontWeight: '700', color: T.color.muted },
+  crumbTextActive: { color: T.color.brand },
+  stepHint: { marginTop: 14, marginBottom: 8, fontSize: 12.5, fontWeight: '700', color: T.color.faint, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 0.6 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 },
   cell: { alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
-  cellActive: { backgroundColor: AppColors.primary },
-  cellText: { fontSize: 15, fontWeight: '600', color: AppColors.textPrimary },
+  cellActive: { backgroundColor: T.color.brand },
+  cellText: { fontSize: 15, fontWeight: '600', color: T.color.ink },
   cellTextActive: { color: '#fff', fontWeight: '800' },
   yearCell: { width: '25%', height: 48, marginVertical: 4 },
   monthCell: { width: '33.33%', height: 52, marginVertical: 4 },
   monthNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, paddingHorizontal: 8 },
-  monthNavText: { fontSize: 16, fontWeight: '800', color: AppColors.textPrimary },
+  monthNavText: { fontSize: 16, fontWeight: '800', color: T.color.ink },
   dayCell: { width: `${100 / 7}%`, height: 44, alignItems: 'center', justifyContent: 'center' },
   dayButton: { borderRadius: 22 },
-  weekday: { fontSize: 12, fontWeight: '700', color: AppColors.muted },
+  weekday: { fontSize: 12, fontWeight: '700', color: T.color.faint },
   cancel: { marginTop: 12, alignItems: 'center', paddingVertical: 12 },
-  cancelText: { fontSize: 15, fontWeight: '700', color: AppColors.textSecondary },
+  cancelText: { fontSize: 15, fontWeight: '700', color: T.color.muted },
 });

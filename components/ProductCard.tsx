@@ -1,13 +1,16 @@
 // components/ProductCard.tsx
 import { decrementQuantity, incrementQuantity } from '@/store/slices/cartSlice';
 import Ionicons from '@react-native-vector-icons/ionicons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { memo, useCallback, useEffect, useState } from 'react';
+import React, { memo, useCallback } from 'react';
 import { Dimensions, TouchableOpacity, View, Text, StyleSheet } from 'react-native';
-import { useDispatch, useSelector } from 'react-redux';
+import { shallowEqual, useDispatch, useSelector } from 'react-redux';
+import { router } from 'expo-router';
+import { showAlert } from '@/services/alertService';
+import { useFavorite } from '@/services/favoritesService';
 import styled from 'styled-components/native';
 import { Product } from '../types/Product';
 import AppImage from './AppImage';
+import { T } from '@/constants/tokens';
 import FoodTypeMark from './common/FoodTypeMark';
 import { buildCartItemFromProduct, buildProductCartKey, getProductVariants } from '@/utils/productVariants';
 import { useAddToCartWithRestaurantGuard } from '@/hooks/useAddToCartWithRestaurantGuard';
@@ -60,14 +63,15 @@ const getRatingMeta = (product: Product) => {
 interface Props {
   layout?: 'grid' | 'list';
   product: Product;
-  onPress: () => void;
+  /** Gets the product back, so a list can pass one stable handler to every (memoized) card. */
+  onPress: (product: Product) => void;
   /** Opens the shared customize bottom sheet (variant + modifiers + addons) — fired
    *  instead of a direct add whenever the item has more than one variant, a modifier
    *  group, or an addon (see hasCustomization below). Kept as one callback (not a
    *  separate "multi-variant" one) since all three need the exact same sheet. */
   onCustomize?: (product: Product) => void;
   canAddToCart?: boolean;
-  onAddUnavailablePress?: () => void;
+  onAddUnavailablePress?: (product: Product) => void;
   isWithinServiceArea?: boolean;
   /** This card's own restaurant name — passed through to the cross-restaurant cart
    *  guard so its confirmation alert names both restaurants instead of falling back to
@@ -81,31 +85,21 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
   const variants = getProductVariants(product);
   const hasMultipleVariants = variants.length > 1;
   const cartKey = buildProductCartKey({ ...product, selectedVariantId: variants[0]?.id || null });
-  const cartItem = useSelector((state: any) =>
-    state.cart.items.find((item: Product) => buildProductCartKey(item) === cartKey)
+  // Every cart row of this product (one per variant/customisation, combos excluded) — so a
+  // "Large" added from the customise sheet still shows on the card and its stepper.
+  const baseId = String(product.firebaseId || product.id || '');
+  const cartRows: (Product & { quantity: number })[] = useSelector(
+    (state: any) =>
+      state.cart.items.filter(
+        (item: Product) => !item.isDeal && String(item.baseProductId || item.firebaseId || item.id || '') === baseId
+      ),
+    shallowEqual
   );
+  const cartQuantity = cartRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const outOfStock = product.inStock === false;
 
-  // Favorite state
-  const [isFav, setIsFav] = useState(false);
-  const favKey = `fav_${cartKey}`;
-
-  useEffect(() => {
-    (async () => {
-      const fav = await AsyncStorage.getItem(favKey);
-      setIsFav(fav === '1');
-    })();
-  }, [favKey]);
-
-  const toggleFav = useCallback(async () => {
-    if (isFav) {
-      await AsyncStorage.removeItem(favKey);
-      setIsFav(false);
-    } else {
-      await AsyncStorage.setItem(favKey, '1');
-      setIsFav(true);
-    }
-  }, [isFav, favKey]);
+  // Saved on the customer's account (services/favoritesService.ts), keyed by the menu item id.
+  const { isFavorite: isFav, toggle: toggleFav } = useFavorite('MENU_ITEM', baseId);
 
   // An item with more than one variant, a modifier group, or an addon needs a pick before
   // it can go in the cart — opens the shared CustomizeItemModal bottom sheet instead of
@@ -114,7 +108,7 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
 
   const onAddToCart = useCallback(() => {
     if (!canAddToCart) {
-      onAddUnavailablePress?.();
+      onAddUnavailablePress?.(product);
       return;
     }
     if (needsCustomization) {
@@ -126,17 +120,31 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
 
   const handleIncrement = useCallback(() => {
     if (!canAddToCart) {
-      onAddUnavailablePress?.();
+      onAddUnavailablePress?.(product);
       return;
     }
-    dispatch(incrementQuantity(cartKey));
-  }, [canAddToCart, onAddUnavailablePress, dispatch, cartKey]);
+    // A customisable item's + adds another pick through the sheet, like Swiggy/Zomato.
+    if (needsCustomization) {
+      onCustomize?.(product);
+      return;
+    }
+    if (cartRows[0]) dispatch(incrementQuantity(buildProductCartKey(cartRows[0])));
+  }, [canAddToCart, onAddUnavailablePress, product, needsCustomization, onCustomize, dispatch, cartRows]);
+  const handlePress = useCallback(() => onPress(product), [onPress, product]);
 
   const handleDecrement = useCallback(() => {
-    dispatch(decrementQuantity(cartKey));
-  }, [dispatch, cartKey]);
+    if (cartRows.length === 1) {
+      dispatch(decrementQuantity(buildProductCartKey(cartRows[0])));
+      return;
+    }
+    // Several variants/customisations in the cart — the card can't tell which one to drop.
+    showAlert('Remove from cart', `${product.name} has more than one customisation in your cart. Remove the one you don't want from the cart.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Go to cart', onPress: () => router.push({ pathname: '/user/cart' }) },
+    ]);
+  }, [dispatch, cartRows, product.name]);
 
-  const isAdded = Boolean(cartItem);
+  const isAdded = cartRows.length > 0;
   const imageUris = product.images && product.images.length > 0 ? product.images : ['https://via.placeholder.com/200'];
   const price = Number(product.price || 0);
   const featureTags = getFeatureTags(product);
@@ -145,25 +153,43 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
   const ratingMeta = getRatingMeta(product);
 
   if (layout === 'list') {
+    // Many menus repeat the name as the description ("Hot Coffee / Hot Coffee") — skip it.
+    const description = String(product.description || '').trim();
+    const showDescription = description.length > 0 && description.toLowerCase() !== String(product.name || '').trim().toLowerCase();
     return (
       <View style={listStyles.row}>
-        <TouchableOpacity accessibilityRole="button" accessibilityLabel={`View ${product.name}`} onPress={onPress} style={listStyles.photo}>
-          <AppImage uri={imageUris[0]} style={{ width: '100%', height: '100%' }} />
-          {badge ? <View style={listStyles.badge}><Text style={listStyles.badgeText}>{badge}</Text></View> : null}
-          {outOfStock ? <View style={listStyles.stock}><Text style={listStyles.badgeText}>Out of stock</Text></View> : null}
-        </TouchableOpacity>
-        <View style={{ flex: 1, paddingLeft: 12 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-            <TouchableOpacity onPress={onPress} style={{ flex: 1 }}>
-              {product.foodType ? <View style={listStyles.mark}><FoodTypeMark foodType={product.foodType} /></View> : null}
-              <Text style={listStyles.name}>{product.name}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity accessibilityLabel={isFav ? 'Remove from favourites' : 'Save to favourites'} accessibilityRole="button" onPress={toggleFav} style={{ padding: 6 }}><Ionicons name={isFav ? 'heart' : 'heart-outline'} size={21} color={isFav ? '#ef4444' : '#293241'} /></TouchableOpacity>
+        <View style={{ flex: 1, paddingRight: 14 }}>
+          <View style={listStyles.markRow}>
+            {product.foodType ? <FoodTypeMark foodType={product.foodType} /> : null}
+            {badge ? <Text style={listStyles.badgeText}>{badge}</Text> : null}
           </View>
-          {product.description ? <Text numberOfLines={2} style={listStyles.description}>{product.description}</Text> : null}
-          <View style={listStyles.bottom}>
+          <TouchableOpacity activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={`View ${product.name}`} onPress={handlePress}>
+            <Text style={listStyles.name}>{product.name}</Text>
             <Text style={listStyles.price}>₹{price.toFixed(0)}</Text>
-            {!isAdded || needsCustomization ? <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Add ${product.name}`} onPress={onAddToCart} style={[listStyles.add, outOfStock && { backgroundColor: '#aaa' }]}><Text style={listStyles.addText}>{outOfStock ? 'Unavailable' : 'ADD'}</Text>{!outOfStock && <Ionicons name="add-circle" size={23} color="#fff" />}</TouchableOpacity> : <View style={listStyles.quantity}><TouchableOpacity accessibilityLabel={`Remove one ${product.name}`} onPress={handleDecrement} style={listStyles.step}><Ionicons name="remove" size={18} color="#ff7500" /></TouchableOpacity><Text style={listStyles.quantityText}>{cartItem.quantity}</Text><TouchableOpacity accessibilityLabel={`Add one ${product.name}`} onPress={handleIncrement} style={listStyles.step}><Ionicons name="add" size={18} color="#ff7500" /></TouchableOpacity></View>}
+            {showDescription ? <Text numberOfLines={2} style={listStyles.description}>{description}</Text> : null}
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.8} accessibilityLabel={isFav ? 'Remove from favourites' : 'Save to favourites'} accessibilityRole="button" onPress={toggleFav} hitSlop={8} style={listStyles.fav}>
+            <Ionicons name={isFav ? 'heart' : 'heart-outline'} size={16} color={isFav ? T.color.danger : T.color.muted} />
+          </TouchableOpacity>
+        </View>
+        <View style={listStyles.media}>
+          <TouchableOpacity activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={`View ${product.name}`} onPress={handlePress} style={listStyles.photo}>
+            <AppImage uri={imageUris[0]} style={{ width: '100%', height: '100%' }} />
+            {outOfStock ? <View style={listStyles.stock}><Text style={listStyles.stockText}>Out of stock</Text></View> : null}
+          </TouchableOpacity>
+          <View style={listStyles.addWrap}>
+            {!isAdded ? (
+              <TouchableOpacity activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={`Add ${product.name}`} onPress={onAddToCart} style={[listStyles.add, outOfStock && listStyles.addDisabled]}>
+                <Text style={[listStyles.addText, outOfStock && { color: T.color.faint }]}>{outOfStock ? 'SOLD OUT' : 'ADD'}</Text>
+                {!outOfStock ? <Ionicons name="add" size={14} color={T.color.brand} style={listStyles.addPlus} /> : null}
+              </TouchableOpacity>
+            ) : (
+              <View style={[listStyles.add, listStyles.quantity]}>
+                <TouchableOpacity activeOpacity={0.8} accessibilityLabel={`Remove one ${product.name}`} onPress={handleDecrement} style={listStyles.step}><Ionicons name="remove" size={16} color="#fff" /></TouchableOpacity>
+                <Text style={listStyles.quantityText}>{cartQuantity}</Text>
+                <TouchableOpacity activeOpacity={0.8} accessibilityLabel={`Add one ${product.name}`} onPress={handleIncrement} style={listStyles.step}><Ionicons name="add" size={16} color="#fff" /></TouchableOpacity>
+              </View>
+            )}
           </View>
           {needsCustomization ? <Text style={listStyles.customize}>Customisable</Text> : null}
         </View>
@@ -173,13 +199,13 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
 
   return (
     <CardContainer>
-      <ImagePressArea activeOpacity={1} disabled onPress={onPress}>
+      <ImagePressArea activeOpacity={1} disabled onPress={handlePress}>
         {badge && (
           <Badge style={{ backgroundColor: badgeColor }}>
             <BadgeText>{badge}</BadgeText>
           </Badge>
         )}
-        <FavoriteIcon onPress={toggleFav} activeOpacity={0.7}>
+        <FavoriteIcon onPress={toggleFav} activeOpacity={0.8}>
           <Ionicons name={isFav ? 'heart' : 'heart-outline'} size={20} color={isFav ? '#e53935' : '#e53935'} />
         </FavoriteIcon>
         <ProductImageContainer>
@@ -191,7 +217,7 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
           {outOfStock ? <OutOfStockOverlay>Out of Stock</OutOfStockOverlay> : null}
         </ProductImageContainer>
       </ImagePressArea>
-      <Content activeOpacity={1} disabled onPress={onPress}>
+      <Content activeOpacity={1} disabled onPress={handlePress}>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
           {product.foodType ? <View style={{ marginTop: 2 }}><FoodTypeMark foodType={product.foodType} size={13} /></View> : null}
           <Title numberOfLines={2} style={{ flex: 1 }}>{product.name}</Title>
@@ -201,8 +227,8 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
           <PriceRow>
             <Price>₹{price.toFixed(0)}</Price>
           </PriceRow>
-          {!isAdded || needsCustomization ? (
-            <AddButton onPress={onAddToCart} activeOpacity={0.7} $disabled={outOfStock}>
+          {!isAdded ? (
+            <AddButton onPress={onAddToCart} activeOpacity={0.8} $disabled={outOfStock}>
               <AddButtonText $disabled={outOfStock}>ADD</AddButtonText>
               <AddButtonIconBox $disabled={outOfStock}>
                 <Ionicons name={outOfStock ? 'alert-circle-outline' : 'add'} size={20} color={outOfStock ? '#9ca3af' : '#f68712'} />
@@ -210,11 +236,11 @@ const ProductCard: React.FC<Props> = memo(({ layout = 'grid', product, onPress, 
             </AddButton>
           ) : (
             <StyledQuantityRow>
-              <StyledQtyBtn onPress={handleDecrement} activeOpacity={0.7} >
+              <StyledQtyBtn onPress={handleDecrement} activeOpacity={0.8} >
                 <StyledQtyText>-</StyledQtyText>
               </StyledQtyBtn>
-              <StyledQtyValue>{cartItem!.quantity}</StyledQtyValue>
-              <StyledQtyBtn onPress={handleIncrement} activeOpacity={0.7} >
+              <StyledQtyValue>{cartQuantity}</StyledQtyValue>
+              <StyledQtyBtn onPress={handleIncrement} activeOpacity={0.8} >
                 <StyledQtyText>+</StyledQtyText>
               </StyledQtyBtn>
             </StyledQuantityRow>
@@ -259,7 +285,7 @@ const CardContainer = styled.View.attrs({
   elevation: 1;
 `;
 
-const ImagePressArea = styled(TouchableOpacity)`
+const ImagePressArea = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   width: 100%;
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
@@ -274,7 +300,7 @@ const ProductImage = styled(AppImage)`
   border-top-right-radius: 12px;
 `;
 
-const Content = styled(TouchableOpacity)`
+const Content = styled(TouchableOpacity).attrs({ activeOpacity: 0.8 })`
   padding: 12px 12px 2px 12px;
 `;
 
@@ -322,7 +348,7 @@ const RatingContainer = styled.View`
   z-index: 3;
 `;
 
-const AddButton = styled.TouchableOpacity<{ $disabled?: boolean }>`
+const AddButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $disabled?: boolean }>`
   background-color: ${({ $disabled }: { $disabled?: boolean }) => ($disabled ? '#e5e7eb' : '#f68712')};
   border-radius: 22px;
   flex-direction: row;
@@ -354,7 +380,7 @@ const QuantityRow = styled.View`
   align-items: center;
 `;
 
-const QtyBtn = styled.TouchableOpacity`
+const QtyBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background-color: #f68712;
   padding: 6px 12px;
   border-radius: 8px;
@@ -385,7 +411,7 @@ const BadgeText = styled.Text`
   font-size: 11px;
   font-weight: bold;
 `;
-const FavoriteIcon = styled.TouchableOpacity`
+const FavoriteIcon = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   position: absolute;
   top: 10px;
   right: 10px;
@@ -490,7 +516,7 @@ const StyledQuantityRow = styled.View`
   justify-content: center;
 `;
 
-const StyledQtyBtn = styled.TouchableOpacity`
+const StyledQtyBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   background: transparent;
   padding: 2px 3px;
   border-radius: 12px;
@@ -521,19 +547,24 @@ const StyledQtyValue = styled.Text`
 
 
 const listStyles = StyleSheet.create({
-  row: { flexDirection: 'row', paddingVertical: 14, marginHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  photo: { width: 102, height: 112, borderRadius: 13, overflow: 'hidden', backgroundColor: '#f4f4f4' },
-  badge: { position: 'absolute', top: 6, left: 5, backgroundColor: '#ff7500', padding: 4, borderRadius: 6 },
-  badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
-  stock: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#0009', padding: 7 },
-  mark: { paddingTop: 4, marginBottom: 2 },
-  name: { fontSize: 15, fontWeight: '800', color: '#141c2a', paddingTop: 4 },
-  description: { fontSize: 12, lineHeight: 17, color: '#707783', marginTop: 3 },
-  bottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 6 },
-  price: { fontSize: 17, color: '#ff7500', fontWeight: '800' },
-  add: { backgroundColor: '#ff7500', borderRadius: 22, minHeight: 38, paddingHorizontal: 10, flexDirection: 'row', gap: 7, alignItems: 'center' },
-  addText: { color: '#fff', fontSize: 12, fontWeight: '800' },
-  quantity: { borderWidth: 1, borderColor: '#ff7500', borderRadius: 20, flexDirection: 'row', alignItems: 'center' },
-  step: { padding: 10 }, quantityText: { color: '#ff7500', fontWeight: '800' },
-  customize: { color: '#929292', fontSize: 10, textAlign: 'right', marginTop: 4 },
+  row: { flexDirection: 'row', paddingTop: 18, paddingBottom: 22, marginHorizontal: 16, borderBottomWidth: 1, borderBottomColor: T.color.line },
+  markRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  badgeText: { color: T.color.brand, fontSize: 10, fontWeight: '800', letterSpacing: 0.4 },
+  name: { fontSize: 16, fontWeight: '700', color: T.color.ink },
+  price: { fontSize: 15, color: T.color.ink, fontWeight: '700', marginTop: 4 },
+  description: { fontSize: 13, lineHeight: 18, color: T.color.muted, marginTop: 6 },
+  fav: { alignSelf: 'flex-start', marginTop: 10, padding: 6, borderRadius: T.radius.pill, borderWidth: 1, borderColor: T.color.line },
+  media: { width: 128, alignItems: 'center' },
+  photo: { width: 128, height: 120, borderRadius: T.radius.lg, overflow: 'hidden', backgroundColor: '#f4f4f4' },
+  stock: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(255,255,255,0.6)', alignItems: 'center', justifyContent: 'center' },
+  stockText: { color: T.color.inkSoft, fontSize: 11, fontWeight: '800' },
+  addWrap: { marginTop: -20 },
+  add: { minWidth: 104, height: 38, borderRadius: T.radius.md, backgroundColor: T.color.surface, borderWidth: 1, borderColor: T.color.brandBorder, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', ...T.shadow.card },
+  addDisabled: { borderColor: T.color.line },
+  addText: { color: T.color.brand, fontSize: 15, fontWeight: '800', letterSpacing: 0.5 },
+  addPlus: { position: 'absolute', top: 2, right: 4 },
+  quantity: { backgroundColor: T.color.brand, borderColor: T.color.brand, justifyContent: 'space-between' },
+  step: { paddingHorizontal: 12, height: '100%', justifyContent: 'center' },
+  quantityText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  customize: { color: T.color.faint, fontSize: 10, marginTop: 6 },
 });

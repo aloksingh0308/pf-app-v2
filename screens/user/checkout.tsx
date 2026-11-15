@@ -1,7 +1,8 @@
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
-import AppButton from '@/components/common/AppButton';
+import AppButton, { PRIMARY_BUTTON_GUTTER } from '@/components/common/AppButton';
 import { AppColors } from '@/constants/appColors';
 import { AppStrings } from '@/constants/appStrings';
+import { T } from '@/constants/tokens';
 import { useAppLoader } from '@/hooks/useAppLoader';
 import { computeDeliveryFee, DEFAULT_PRICING_CONFIG, getPricingConfig, PricingConfig } from '@/services/appConfigService';
 import { validateCoupon, CouponItem, fetchActiveCoupons, formatCouponOrderTypes, isCouponValidForOrderType, toBackendOrderType } from '@/services/couponService';
@@ -19,12 +20,13 @@ import Ionicons from '@react-native-vector-icons/ionicons';
 import { useFocusEffect } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, TouchableOpacity, View } from 'react-native';
+import { splitGst } from '@/utils/gst';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components/native';
 import { showAlert, showErrorAlert } from '../../services/alertService';
-import { errorReason, track } from '../../services/analytics';
+import { errorParams, track } from '../../services/analytics';
 import { userService } from '../../services/userService';
 import { RootState } from '../../store';
 import { setUser } from '../../store/slices/authSlice';
@@ -46,6 +48,7 @@ const CheckoutScreen = () => {
   const insets = useSafeAreaInsets();
   const placementInFlight = useRef(false);
   const [placingOrder, setPlacingOrder] = useState(false);
+  const [gstExpanded, setGstExpanded] = useState(false);
   const dispatch = useDispatch();
   const {
     orderType,
@@ -250,7 +253,21 @@ const CheckoutScreen = () => {
   const [prevWalletUsed, setPrevWalletUsed] = useState<number>(0);
 
   const walletBalance = Number(authUser?.walletBalance || 0);
-  const totalBeforeWallet = subtotalAfterDiscount + packagingCharge + deliveryFee;
+  // Same order as the backend (orderPricing.ts): coins are a discount, GST is on the item
+  // total after every discount, then packaging + delivery, rounded to the rupee; wallet pays last.
+  const gstPercent = Number(pricingConfig.gstPercent ?? 0);
+  // Menu prices may already include GST (restaurant's setting): then it's taken out of
+  // the price and shown as "included" — nothing is added on top.
+  const gstIncluded = Boolean(pricingConfig.pricesIncludeGst) && gstPercent > 0;
+  const foodAfterDiscounts = Math.max(0, subtotalAfterDiscount - coinDiscount);
+  const gstAmount = gstIncluded
+    ? Math.round((foodAfterDiscounts * gstPercent * 100) / (100 + gstPercent)) / 100
+    : Math.round(foodAfterDiscounts * gstPercent) / 100;
+  const gstBase = gstIncluded ? foodAfterDiscounts - gstAmount : foodAfterDiscounts;
+  const preRoundTotal = foodAfterDiscounts + (gstIncluded ? 0 : gstAmount) + packagingCharge + deliveryFee;
+  const totalBeforeWallet = Math.max(0, Math.round(preRoundTotal));
+  const roundOff = Math.round((totalBeforeWallet - preRoundTotal) * 100) / 100;
+  const gstSplit = splitGst(gstAmount, gstBase, gstPercent);
   const maxWalletUsageByItems = subtotal * 0.1;
 
   // There's no public "edit an already-placed order" endpoint on the new backend (see
@@ -271,7 +288,7 @@ const CheckoutScreen = () => {
   );
 
   // Final total with coin discount
-  const total = Number(Math.max(0, totalBeforeWallet - walletUsed - coinDiscount).toFixed(2));
+  const total = Number(Math.max(0, totalBeforeWallet - walletUsed).toFixed(2));
 
   useEffect(() => {
     if (!isCouponSectionDisabled) {
@@ -328,7 +345,7 @@ const CheckoutScreen = () => {
       setCouponCodeInput(coupon.code || '');
       setCouponModalVisible(false);
     } catch (error: any) {
-      track('coupon_apply_failed', { coupon_code: coupon.code, reason: errorReason(error) });
+      track('coupon_apply_failed', { coupon_code: coupon.code, ...errorParams(error) });
       showAlert('Coupon Not Applicable', error?.message || 'This coupon could not be applied.');
     } finally {
       setIsApplyingCoupon(false);
@@ -401,7 +418,7 @@ const CheckoutScreen = () => {
       setCouponCodeInput(applied.code);
       setCouponModalVisible(false);
     } catch (error: any) {
-      track('coupon_apply_failed', { coupon_code: couponCodeInput.trim().toUpperCase(), reason: errorReason(error), entered_manually: true });
+      track('coupon_apply_failed', { coupon_code: couponCodeInput.trim().toUpperCase(), ...errorParams(error), entered_manually: true });
       showAlert('Coupon Not Applicable', error?.message || 'This coupon code is not available or expired.');
     } finally {
       setIsApplyingCoupon(false);
@@ -446,6 +463,8 @@ const CheckoutScreen = () => {
   const visibleCoupons = coupons.filter(
     (coupon) => String(coupon.createdFrom || '').trim().toUpperCase() !== 'SCRATCH_CARD'
       && isCouponValidForOrderType(coupon, backendOrderType)
+      // Hide coupons the customer has already used up to their per-user limit.
+      && !(coupon.timesPerUser && (coupon.userUsageCount ?? 0) >= coupon.timesPerUser && appliedCoupon?.id !== coupon.id)
   );
   const hiddenByOrderTypeCount = coupons.filter((coupon) => !isCouponValidForOrderType(coupon, backendOrderType)).length;
 
@@ -666,6 +685,7 @@ const CheckoutScreen = () => {
         {
           subtotal,
           discount: discountAmount + coinDiscount,
+          tax: gstAmount,
           packagingCharge,
           deliveryFee,
           walletUsed,
@@ -730,7 +750,7 @@ const CheckoutScreen = () => {
     } catch (error) {
       hideGlobalLoader();
       console.error('Error placing order:', error);
-      track('order_place_failed', { reason: errorReason(error), order_type: String(orderType || ''), value: Number(total) || 0 });
+      track('order_place_failed', { ...errorParams(error), order_type: String(orderType || ''), value: Number(total) || 0 });
       showErrorAlert(error, 'Failed to place order. Please try again.', 'Error');
     } finally {
       // Keep the guard locked after success until checkout unmounts.
@@ -855,6 +875,7 @@ const CheckoutScreen = () => {
         pricing: {
           subtotal,
           discount: discountAmount + coinDiscount,
+          tax: gstAmount,
           packagingCharge,
           deliveryFee,
           walletUsed,
@@ -919,7 +940,7 @@ const CheckoutScreen = () => {
       } as never);
     } catch (error: any) {
       console.error('Error reserving order:', error);
-      track('order_place_failed', { reason: errorReason(error), order_type: String(orderType || ''), scheduled: true });
+      track('order_place_failed', { ...errorParams(error), order_type: String(orderType || ''), scheduled: true });
       const message = String(error?.message || '').trim();
       if (message.toLowerCase().includes('slot is full')) {
         showAlert('Slot Full', 'Selected slot is full. Please choose another slot.');
@@ -932,82 +953,96 @@ const CheckoutScreen = () => {
     }
   };
 
+  const restaurantName = String(restaurantMeta?.name || (cartItems[0] as any)?.restaurantName || '').trim();
+  const isEditingOrder = Boolean(String(existingOrderId || '').trim());
+  const itemCount = summaryItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const totalSavings = cartSavings + discountAmount + coinDiscount;
+  const tableValue = String(tableNumber || '').trim();
+  const orderDetail: { icon: 'location-outline' | 'bag-handle-outline' | 'restaurant-outline'; title: string; subtitle: string } = isHomeDeliveryOrder
+    ? { icon: 'location-outline', title: 'Home Delivery', subtitle: String(deliveryAddress || '').trim() || 'Your delivery address' }
+    : isTakeAwayOrder
+      ? { icon: 'bag-handle-outline', title: 'Take-Away', subtitle: restaurantName ? `Pick up from ${restaurantName}` : 'Pick up from the restaurant' }
+      : {
+        icon: 'restaurant-outline',
+        title: tableValue ? `Dine In · ${/^\d+$/.test(tableValue) ? `Table ${tableValue}` : tableValue}` : 'Dine In',
+        subtitle: restaurantName || 'Served at your table',
+      };
+  const appliedCouponHeadline = !appliedCoupon
+    ? ''
+    : appliedCoupon.offerId
+      ? String(appliedCoupon.dealHeadline || appliedCoupon.title || 'Restaurant offer')
+      : appliedCoupon.dealHeadline
+        ? appliedCoupon.dealHeadline
+        : appliedCoupon.type === 'Percentage'
+          ? `${appliedCoupon.value}% OFF`
+          : appliedCoupon.type === 'Flat'
+            ? `₹${appliedCoupon.value} OFF`
+            : `${freebieName} FREE`;
+  const showPaymentChoice = onlineAvailable && isOffPremiseOrder && isCafeOpen;
+  const offlinePayment = isHomeDeliveryOrder
+    ? { title: 'Pay on delivery', hint: 'Payment will be collected by the delivery partner at the time of delivery.' }
+    : { title: 'Pay at the restaurant', hint: isTakeAwayOrder ? 'Cash or UPI when you pick up your food.' : 'Cash or UPI once you’re done.' };
+
   return (
     <Container>
       <PageHeader title="Checkout" />
 
       <ScrollContainer keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 24 }}>
-        <CheckoutIntro>One last look before we get cooking.</CheckoutIntro>
-        <Summary>
-          <CardHeading><Ionicons name="receipt-outline" size={20} color="#ee7513" /><CardTitle>Order summary</CardTitle></CardHeading>
-          {summaryItems.map(item => (
-            <SummaryRow key={item.key} style={{ alignItems: 'flex-start' }}>
-              <QuantityBadge>{item.quantity}×</QuantityBadge>
+        <IntroBlock>
+          {!isEditingOrder ? (
+            <StepBar>
+              <StepSegment $active />
+              <StepSegment $active />
+            </StepBar>
+          ) : null}
+          <IntroStep>{isEditingOrder ? 'UPDATING YOUR ORDER' : 'STEP 2 OF 2'}</IntroStep>
+          <IntroTitle>Review & place order</IntroTitle>
+          <IntroSubtitle>One last look before we get cooking.</IntroSubtitle>
+        </IntroBlock>
+
+        <Card>
+          <DetailRow>
+            <IconCircle>
+              <Ionicons name={orderDetail.icon} size={18} color={T.color.brand} />
+            </IconCircle>
+            <View style={{ flex: 1 }}>
+              <DetailTitle>{orderDetail.title}</DetailTitle>
+              <DetailText numberOfLines={2}>{orderDetail.subtitle}</DetailText>
+            </View>
+            {!isEditingOrder && router.canGoBack() ? (
+              <LinkButton accessibilityRole="button" accessibilityLabel="Change order details" onPress={() => router.back()}>
+                <LinkButtonText>Change</LinkButtonText>
+              </LinkButton>
+            ) : null}
+          </DetailRow>
+        </Card>
+
+        <Card>
+          <CardHeading>
+            <CardTitle>Your order</CardTitle>
+            <CardHint>{itemCount} item{itemCount === 1 ? '' : 's'}</CardHint>
+          </CardHeading>
+          {!!restaurantName && <CardSubtitle>{restaurantName}</CardSubtitle>}
+          {summaryItems.map((item, index) => (
+            <ItemRow key={item.key} $first={index === 0} $last={index === summaryItems.length - 1}>
+              <QuantityBadge>
+                <QuantityBadgeText>{item.quantity}×</QuantityBadgeText>
+              </QuantityBadge>
               <View style={{ flex: 1, marginRight: 12 }}>
                 <ItemName>{item.name}</ItemName>
                 {!!item.detail && <ItemDetail>{item.detail}</ItemDetail>}
               </View>
               <ItemAmount>₹{item.amount.toFixed(2)}</ItemAmount>
-            </SummaryRow>
+            </ItemRow>
           ))}
-          {cartSavings > 0 && <SavingsNote>You’re saving ₹{cartSavings.toFixed(2)} on your items</SavingsNote>}
-          <Divider />
-          <SummaryRow>
-            <SubtotalLabel>Item subtotal</SubtotalLabel>
-            <SubtotalValue>₹{subtotal.toFixed(2)}</SubtotalValue>
-          </SummaryRow>
-          {appliedCoupon && !isCouponSectionDisabled && (
-            <SummaryRow>
-              <DiscountLabel>Coupon discount</DiscountLabel>
-              <DiscountValue>{appliedCoupon.type === 'Freebie' ? 'FREE' : `−₹${discountAmount.toFixed(2)}`}</DiscountValue>
-            </SummaryRow>
-          )}
-          {walletUsed > 0 && <SummaryRow>
-            <WalletLabel>Wallet used</WalletLabel>
-            <WalletValue>−₹{walletUsed.toFixed(2)}</WalletValue>
-          </SummaryRow>}
-          {packagingCharge > 0 && <SummaryRow>
-            <ChargeLabel>Packaging charges</ChargeLabel>
-            <ChargeValue>₹{packagingCharge.toFixed(2)}</ChargeValue>
-          </SummaryRow>}
+        </Card>
 
-          {isHomeDeliveryOrder ? (
-            <SummaryRow>
-              <ChargeLabel>Delivery Fee</ChargeLabel>
-              <ChargeValue>₹{deliveryFee.toFixed(2)}</ChargeValue>
-            </SummaryRow>
-          ) : null}
-
-          <Divider />
-
-          {/* --- Reward Coin System UI --- */}
-          {canRedeemCoins && (
-            <>
-              <SummaryRow>
-                <SubtotalLabel>Reward Coins</SubtotalLabel>
-                <SubtotalValue>{earnedCoin}</SubtotalValue>
-              </SummaryRow>
-              <SummaryRow>
-                <SubtotalLabel>Coin Value</SubtotalLabel>
-                <SubtotalValue>₹{coinValue}</SubtotalValue>
-              </SummaryRow>
-              <SummaryRow>
-                <DiscountLabel>Coin Discount</DiscountLabel>
-                <DiscountValue>-₹{coinDiscount}</DiscountValue>
-              </SummaryRow>
-            </>
-          )}
-          {/* --- End Reward Coin System UI --- */}
-
-          <SummaryRow>
-            <TotalLabel>To pay</TotalLabel>
-            <TotalValue>₹{total.toFixed(2)}</TotalValue>
-          </SummaryRow>
-        </Summary>
-
-        <CouponSection>
-          <CardHeading><Ionicons name="pricetag-outline" size={20} color="#ee7513" /><CardTitle>Offers & coupons</CardTitle></CardHeading>
+        <Card>
+          <CardHeading>
+            <Ionicons name="pricetag-outline" size={18} color={T.color.brand} />
+            <CardTitle>Offers & coupons</CardTitle>
+          </CardHeading>
           {isCouponSectionDisabled ? (
             <CouponStatusText>Your cart contains only deals or beverages, which aren’t eligible for coupons.</CouponStatusText>
           ) : null}
@@ -1016,11 +1051,15 @@ const CheckoutScreen = () => {
           ) : null}
           {offerResults.length > 0 ? (
             <OffersList>
-              <OffersListTitle>Offers for you</OffersListTitle>
               {offerResults.map((offer) => {
                 const isApplied = appliedCoupon?.offerId === offer.offerId;
                 return (
                   <OfferRow key={offer.offerId} $applied={isApplied}>
+                    <Ionicons
+                      name={isApplied ? 'checkmark-circle' : 'gift-outline'}
+                      size={18}
+                      color={isApplied ? T.color.success : offer.applicable ? T.color.brand : T.color.faint}
+                    />
                     <View style={{ flex: 1 }}>
                       <OfferRowHeadline>{offer.headline}</OfferRowHeadline>
                       {offer.applicable ? (
@@ -1030,9 +1069,9 @@ const CheckoutScreen = () => {
                       )}
                     </View>
                     {isApplied ? (
-                      <OfferRowApplied>Applied</OfferRowApplied>
+                      <OfferRowApplied>APPLIED</OfferRowApplied>
                     ) : offer.applicable ? (
-                      <InlineRemoveButton
+                      <OutlineButton
                         accessibilityRole="button"
                         accessibilityLabel={`Apply ${offer.headline}`}
                         onPress={() => {
@@ -1040,59 +1079,195 @@ const CheckoutScreen = () => {
                           applyOffer(offer);
                         }}
                       >
-                        <InlineRemoveText>Apply</InlineRemoveText>
-                      </InlineRemoveButton>
+                        <OutlineButtonText>Apply</OutlineButtonText>
+                      </OutlineButton>
                     ) : null}
                   </OfferRow>
                 );
               })}
             </OffersList>
           ) : null}
-          {appliedCoupon?.offerId ? (
-            <CouponAppliedText>✅ Offer applied — {appliedCoupon.dealHeadline}</CouponAppliedText>
-          ) : appliedCoupon ? (
-            <CouponAppliedText>
-              ✅ {appliedCoupon.code} — {appliedCoupon.dealHeadline
-                ? appliedCoupon.dealHeadline
-                : appliedCoupon.type === 'Percentage'
-                ? `${appliedCoupon.value}% OFF`
-                : appliedCoupon.type === 'Flat'
-                  ? `₹${appliedCoupon.value} OFF`
-                  : `${freebieName} FREE`}
-            </CouponAppliedText>
-          ) : null}
 
-          <CouponContainer>
-            <CouponInput
-              value={couponCodeInput}
-              onChangeText={setCouponCodeInput}
-              placeholder="Enter coupon code"
-              accessibilityLabel="Coupon code"
-              placeholderTextColor="#969397"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              editable={!appliedCoupon && !isCouponSectionDisabled}
-              $disabledInput={Boolean(appliedCoupon) || isCouponSectionDisabled}
-            />
-            {appliedCoupon ? (
-              <InlineRemoveButton onPress={handleRemoveCoupon}>
-                <InlineRemoveText>{AppStrings.common.remove}</InlineRemoveText>
-              </InlineRemoveButton>
-            ) : (
+          {appliedCoupon && !isCouponSectionDisabled ? (
+            <AppliedCouponBanner>
+              <AppliedCouponIcon>
+                <Ionicons name="pricetag" size={16} color={T.color.success} />
+              </AppliedCouponIcon>
+              <View style={{ flex: 1 }}>
+                <AppliedCouponTitle>{appliedCoupon.offerId ? 'Offer applied' : `${appliedCoupon.code} applied`}</AppliedCouponTitle>
+                <AppliedCouponText numberOfLines={2}>
+                  {appliedCouponHeadline}
+                  {appliedCoupon.type !== 'Freebie' && discountAmount > 0 ? ` · You save ₹${discountAmount.toFixed(2)}` : ''}
+                </AppliedCouponText>
+              </View>
+              <LinkButton accessibilityRole="button" accessibilityLabel="Remove coupon" onPress={handleRemoveCoupon}>
+                <LinkButtonText $danger>{AppStrings.common.remove}</LinkButtonText>
+              </LinkButton>
+            </AppliedCouponBanner>
+          ) : (
+            <CouponContainer>
+              <CouponInput
+                value={couponCodeInput}
+                onChangeText={setCouponCodeInput}
+                placeholder="Enter coupon code"
+                accessibilityLabel="Coupon code"
+                placeholderTextColor={T.color.faint}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                editable={!isCouponSectionDisabled}
+                $disabledInput={isCouponSectionDisabled}
+              />
               <ApplyCouponButton
+                accessibilityRole="button"
                 onPress={handleApplyCouponByCode}
                 disabled={isCouponSectionDisabled || isApplyingCoupon || !String(couponCodeInput || '').trim()}
               >
-                <ApplyCouponText>{isApplyingCoupon ? 'Applying...' : 'Apply'}</ApplyCouponText>
+                <ApplyCouponText>{isApplyingCoupon ? 'Applying…' : 'Apply'}</ApplyCouponText>
               </ApplyCouponButton>
-            )}
-          </CouponContainer>
+            </CouponContainer>
+          )}
 
-          <ViewAllCouponsButton onPress={handleOpenCouponModal} disabled={isCouponSectionDisabled}>
-            <ViewAllCouponsText>Browse available coupons</ViewAllCouponsText><Ionicons name="chevron-forward" size={16} color="#ee7513" />
+          <ViewAllCouponsButton accessibilityRole="button" onPress={handleOpenCouponModal} disabled={isCouponSectionDisabled}>
+            <Ionicons name="ticket-outline" size={16} color={T.color.brand} />
+            <ViewAllCouponsText>View all coupons</ViewAllCouponsText>
+            <Ionicons name="chevron-forward" size={16} color={T.color.brand} />
           </ViewAllCouponsButton>
+        </Card>
 
-        </CouponSection>
+        <Card>
+          <CardHeading>
+            <Ionicons name="receipt-outline" size={18} color={T.color.brand} />
+            <CardTitle>Bill details</CardTitle>
+          </CardHeading>
+          <BillRow>
+            <BillLabel>Item total</BillLabel>
+            <BillValue>₹{subtotal.toFixed(2)}</BillValue>
+          </BillRow>
+          {appliedCoupon && !isCouponSectionDisabled && (
+            <BillRow>
+              <BillLabel $saving>{appliedCoupon.offerId ? 'Offer discount' : 'Coupon discount'}</BillLabel>
+              <BillValue $saving>{appliedCoupon.type === 'Freebie' ? 'FREE' : `−₹${discountAmount.toFixed(2)}`}</BillValue>
+            </BillRow>
+          )}
+          {canRedeemCoins && (
+            <BillRow>
+              <BillLabel $saving>Reward coins ({earnedCoin})</BillLabel>
+              <BillValue $saving>−₹{coinDiscount.toFixed(2)}</BillValue>
+            </BillRow>
+          )}
+          {walletUsed > 0 && (
+            <BillRow>
+              <BillLabel $saving>Wallet used</BillLabel>
+              <BillValue $saving>−₹{walletUsed.toFixed(2)}</BillValue>
+            </BillRow>
+          )}
+          {packagingCharge > 0 && (
+            <BillRow>
+              <BillLabel>Packaging charges</BillLabel>
+              <BillValue>₹{packagingCharge.toFixed(2)}</BillValue>
+            </BillRow>
+          )}
+          {gstSplit && (
+            <>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => setGstExpanded((open) => !open)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: gstExpanded }}
+                accessibilityLabel={`GST ${gstPercent}%, ₹${gstAmount.toFixed(2)}. ${gstExpanded ? 'Hide' : 'Show'} CGST and SGST`}
+              >
+                <BillRow>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <BillLabel>{gstIncluded ? `GST ${gstPercent}% (included)` : `GST (${gstPercent}%)`}</BillLabel>
+                    <Ionicons name={gstExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={T.color.inkSoft} />
+                  </View>
+                  <BillValue>₹{gstAmount.toFixed(2)}</BillValue>
+                </BillRow>
+              </TouchableOpacity>
+              {gstExpanded && (
+                <GstBreakup>
+                  <BillRow>
+                    <GstBreakupText>CGST ({gstSplit.halfRateLabel})</GstBreakupText>
+                    <GstBreakupText>₹{gstSplit.cgst.toFixed(2)}</GstBreakupText>
+                  </BillRow>
+                  <BillRow>
+                    <GstBreakupText>SGST ({gstSplit.halfRateLabel})</GstBreakupText>
+                    <GstBreakupText>₹{gstSplit.sgst.toFixed(2)}</GstBreakupText>
+                  </BillRow>
+                </GstBreakup>
+              )}
+            </>
+          )}
+          {isHomeDeliveryOrder ? (
+            <BillRow>
+              <BillLabel>Delivery fee</BillLabel>
+              <BillValue $saving={deliveryFee === 0}>{deliveryFee === 0 ? 'FREE' : `₹${deliveryFee.toFixed(2)}`}</BillValue>
+            </BillRow>
+          ) : null}
+          {roundOff !== 0 && (
+            <BillRow>
+              <BillLabel>Round off</BillLabel>
+              <BillValue>{roundOff < 0 ? '−' : ''}₹{Math.abs(roundOff).toFixed(2)}</BillValue>
+            </BillRow>
+          )}
+          <BillTotalRow>
+            <BillTotalLabel>To pay</BillTotalLabel>
+            <BillTotalValue>₹{total.toFixed(2)}</BillTotalValue>
+          </BillTotalRow>
+          {totalSavings > 0 ? (
+            <SavingsStrip>
+              <Ionicons name="sparkles-outline" size={16} color={T.color.success} />
+              <SavingsStripText>You’re saving ₹{totalSavings.toFixed(2)} on this order</SavingsStripText>
+            </SavingsStrip>
+          ) : null}
+        </Card>
+
+        <Card>
+          <CardHeading>
+            <Ionicons name="wallet-outline" size={18} color={T.color.brand} />
+            <CardTitle>Payment</CardTitle>
+          </CardHeading>
+          {showPaymentChoice ? (
+            <View accessibilityRole="radiogroup">
+              {([
+                { id: 'ONLINE', icon: 'card-outline', title: 'Pay online', hint: 'UPI, cards, net banking — secured by Razorpay' },
+                { id: 'COD', icon: 'cash-outline', title: isHomeDeliveryOrder ? 'Pay on delivery' : 'Pay at the restaurant', hint: 'Cash or UPI when you get your food' },
+              ] as const).map((option) => {
+                const selected = payMode === option.id;
+                return (
+                  <PaymentOption
+                    key={option.id}
+                    $selected={selected}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => setPayMode(option.id)}
+                    activeOpacity={0.8}
+                  >
+                    <PaymentIcon $selected={selected}>
+                      <Ionicons name={option.icon} size={18} color={selected ? T.color.brand : T.color.inkSoft} />
+                    </PaymentIcon>
+                    <View style={{ flex: 1 }}>
+                      <PaymentOptionTitle>{option.title}</PaymentOptionTitle>
+                      <PaymentOptionHint>{option.hint}</PaymentOptionHint>
+                    </View>
+                    <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color={selected ? T.color.brand : '#d6d3d1'} />
+                  </PaymentOption>
+                );
+              })}
+              {payMode === 'ONLINE' ? <PaymentOptionHint style={{ marginTop: 2 }}>The exact amount, including taxes, is shown on the payment screen.</PaymentOptionHint> : null}
+            </View>
+          ) : (
+            <DetailRow>
+              <IconCircle>
+                <Ionicons name="cash-outline" size={18} color={T.color.brand} />
+              </IconCircle>
+              <View style={{ flex: 1 }}>
+                <DetailTitle>{offlinePayment.title}</DetailTitle>
+                <DetailText>{offlinePayment.hint}</DetailText>
+              </View>
+            </DetailRow>
+          )}
+        </Card>
       </ScrollContainer>
 
       <Modal
@@ -1102,7 +1277,7 @@ const CheckoutScreen = () => {
         onRequestClose={() => setCouponModalVisible(false)}
       >
         <CouponSheetOverlay>
-          <CouponSheet style={{ paddingBottom: Math.max(insets.bottom, moderateVerticalScale(16)) }}>
+          <CouponSheet style={{ paddingBottom: insets.bottom + moderateVerticalScale(16) }}>
             <CouponSheetHandle />
             <CouponSheetHeader>
               <CouponModalTitle>{AppStrings.checkout.couponTitle}</CouponModalTitle>
@@ -1195,7 +1370,7 @@ const CheckoutScreen = () => {
         }}
       >
         <ReserveSheetOverlay>
-          <ReserveSheet style={{ paddingBottom: Math.max(insets.bottom, moderateVerticalScale(16)) }}>
+          <ReserveSheet style={{ paddingBottom: insets.bottom + moderateVerticalScale(16) }}>
             <ReserveSheetHandle />
             <ReserveHeaderRow>
               <ReserveHeaderTitle>Cafe is Closed</ReserveHeaderTitle>
@@ -1274,315 +1449,240 @@ const CheckoutScreen = () => {
           </ReserveSheet>
         </ReserveSheetOverlay>
       </Modal>
-
-      {onlineAvailable && isOffPremiseOrder && isCafeOpen ? (
-        <PaymentChoice accessibilityRole="radiogroup">
-          {([
-            { id: 'ONLINE', title: 'Pay online', hint: 'UPI, cards, net banking — secured by Razorpay' },
-            { id: 'COD', title: isHomeDeliveryOrder ? 'Pay on delivery' : 'Pay at the restaurant', hint: 'Cash or UPI when you get your food' },
-          ] as const).map((option) => (
-            <PaymentOption
-              key={option.id}
-              $selected={payMode === option.id}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: payMode === option.id }}
-              onPress={() => setPayMode(option.id)}
-            >
-              <Ionicons name={payMode === option.id ? 'radio-button-on' : 'radio-button-off'} size={moderateScale(20)} color={payMode === option.id ? '#f68712' : '#9a9a9a'} />
-              <View style={{ flex: 1, marginLeft: moderateScale(10) }}>
-                <PaymentOptionTitle>{option.title}</PaymentOptionTitle>
-                <PaymentOptionHint>{option.hint}</PaymentOptionHint>
-              </View>
-            </PaymentOption>
-          ))}
-          {payMode === 'ONLINE' ? <PaymentOptionHint style={{ marginTop: moderateVerticalScale(4) }}>The exact amount, including taxes, is shown on the payment screen.</PaymentOptionHint> : null}
-        </PaymentChoice>
-      ) : isHomeDeliveryOrder ? (
-        /* Payment info for home delivery */
-        <PaymentInfoBox>
-          <PaymentInfoText>
-            Payment will be collected by the delivery partner at the time of delivery.
-          </PaymentInfoText>
-        </PaymentInfoBox>
-      ) : null}
       <RazorpayCheckout payment={checkoutPayment} onResult={handlePaymentResult} />
       <RestaurantPausedBanner />
       {!isCafeOpen && (
-        <View>
         <CafeClosedBanner>
+          <Ionicons name="time-outline" size={16} color={T.color.danger} />
           <CafeClosedBannerText>{cafeClosedMessage}</CafeClosedBannerText>
         </CafeClosedBanner>
-        </View>
       )}
-      <View>
-      <AppButton
-        title={
-          restaurantUnavailable
-            ? 'Not taking orders'
-            : !isCafeOpen
-              ? 'Schedule Order'
-              : onlineAvailable && payMode === 'ONLINE' && isOffPremiseOrder
-                ? 'Proceed to Pay'
-                : AppStrings.common.placeOrder
-        }
-        onPress={handlePlaceOrder}
-        disabled={restaurantUnavailable || placingOrder}
-        loading={placingOrder}
-        style={{
-          width: '90%',
-          alignSelf: 'center',
-          borderRadius: moderateScale(10),
-          padding: moderateScale(16),
-          marginTop: moderateVerticalScale(20),
-          marginBottom: Math.max(moderateVerticalScale(20), insets.bottom),
-        }}
-      />
-      </View>
+      <Footer style={{ paddingBottom: insets.bottom + 12 }}>
+        <FooterTotal>
+          <FooterLabel>TO PAY</FooterLabel>
+          <FooterAmount>₹{total.toFixed(2)}</FooterAmount>
+          {totalSavings > 0 ? <FooterSaved>Saved ₹{totalSavings.toFixed(0)}</FooterSaved> : null}
+        </FooterTotal>
+        <AppButton
+          title={
+            restaurantUnavailable
+              ? 'Not taking orders'
+              : !isCafeOpen
+                ? 'Schedule Order'
+                : onlineAvailable && payMode === 'ONLINE' && isOffPremiseOrder
+                  ? 'Proceed to Pay'
+                  : AppStrings.common.placeOrder
+          }
+          onPress={handlePlaceOrder}
+          disabled={restaurantUnavailable || placingOrder}
+          loading={placingOrder}
+          style={{ flex: 1 }}
+        />
+      </Footer>
     </Container>
   );
 };
-
-
-
-const CafeClosedBanner = styled.View`
-  width: 90%;
-  align-self: center;
-  background-color: #fef2f2;
-  border: 1px solid #ef4444;
-  border-radius: ${moderateScale(8)}px;
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(14)}px;
-  margin-bottom: ${moderateVerticalScale(6)}px;
-`;
-
-const CafeClosedBannerText = styled.Text`
-  color: #dc2626;
-  font-size: ${scaleFont(13)}px;
-  text-align: center;
-  line-height: ${scaleFont(18)}px;
-`;
-
-const PaymentInfoBox = styled.View`
-  width: 90%;
-  align-self: center;
-  background-color: #fff7ef;
-  border: 1px solid #f68712;
-  border-radius: ${moderateScale(8)}px;
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(14)}px;
-  margin-bottom: ${moderateVerticalScale(8)}px;
-`;
-
-const PaymentChoice = styled.View`
-  width: 90%;
-  align-self: center;
-  margin-bottom: ${moderateVerticalScale(8)}px;
-`;
-
-const PaymentOption = styled.TouchableOpacity<{ $selected?: boolean }>`
-  flex-direction: row;
-  align-items: center;
-  background-color: ${(p: { $selected?: boolean }) => (p.$selected ? '#fff7ef' : '#ffffff')};
-  border: 1px solid ${(p: { $selected?: boolean }) => (p.$selected ? '#f68712' : '#e7ded4')};
-  border-radius: ${moderateScale(8)}px;
-  padding: ${moderateVerticalScale(10)}px ${moderateScale(12)}px;
-  margin-bottom: ${moderateVerticalScale(6)}px;
-`;
-
-const PaymentOptionTitle = styled.Text`
-  color: #222;
-  font-size: ${scaleFont(14)}px;
-  font-weight: 700;
-`;
-
-const PaymentOptionHint = styled.Text`
-  color: #777;
-  font-size: ${scaleFont(12)}px;
-`;
-
-const PaymentInfoText = styled.Text`
-  color: #f68712;
-  font-size: ${scaleFont(15)}px;
-  text-align: center;
-`;
 
 export default CheckoutScreen;
 
 const Container = styled(PageScreen)`
   flex: 1;
-  background-color: #fffbf7;
+  background-color: ${T.color.canvas};
 `;
-
-
-
 
 const ScrollContainer = styled.ScrollView`
   flex: 1;
 `;
 
-const Summary = styled.View`
-  background-color: #fff;
-  border-radius: ${moderateScale(12)}px;
-  padding: ${moderateScale(16)}px;
-  margin: 0 ${moderateScale(18)}px ${moderateScale(16)}px;
-  border: 1px solid #eee5dc;
+// ── Intro ───────────────────────────────────────────────────────────────────
+const IntroBlock = styled.View`
+  padding: 16px 16px 14px;
 `;
 
-const SummaryRow = styled.View`
+const StepBar = styled.View`
   flex-direction: row;
-  justify-content: space-between;
-  margin-bottom: ${moderateVerticalScale(12)}px;
-  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
 `;
 
-
-const SubtotalLabel = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #666;
-  font-weight: 500;
-`;
-
-const SubtotalValue = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #333;
-  font-weight: 600;
-`;
-
-const DiscountLabel = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #27ae60;
-  font-weight: 500;
-`;
-
-const DiscountValue = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #27ae60;
-  font-weight: 600;
-`;
-
-const WalletLabel = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #27ae60;
-  font-weight: 500;
-`;
-
-const WalletValue = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #27ae60;
-  font-weight: 600;
-`;
-
-const ChargeLabel = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #666;
-  font-weight: 500;
-`;
-
-const ChargeValue = styled.Text`
-  font-size: ${scaleFont(15)}px;
-  color: #333;
-  font-weight: 600;
-`;
-
-const Divider = styled.View`
-  height: ${moderateVerticalScale(1)}px;
-  background-color: #eee7e0;
-  margin: ${moderateVerticalScale(12)}px 0;
-`;
-
-const TotalLabel = styled.Text`
-  font-size: ${scaleFont(18)}px;
-  font-weight: bold;
-  color: #333;
-`;
-
-const TotalValue = styled.Text`
-  color: #f68712;
-  font-size: ${scaleFont(18)}px;
-  font-weight: bold;
-`;
-
-const CouponSection = styled.View`
-  margin: 0 ${moderateScale(18)}px;
-  padding: ${moderateScale(16)}px;
-  background-color: #fff;
-  border-radius: ${moderateScale(12)}px;
-  border: 1px solid #eee5dc;
-`;
-
-
-const CouponContainer = styled.View`
-  flex-direction: row;
-  gap: ${moderateScale(10)}px;
-  align-items: center;
-`;
-
-const CouponInput = styled.TextInput<{ $disabledInput?: boolean }>`
+const StepSegment = styled.View<{ $active?: boolean }>`
   flex: 1;
-  border: 1px solid #e8ded4;
-  border-radius: ${moderateScale(10)}px;
-  padding: ${moderateScale(12)}px;
+  height: 4px;
+  border-radius: 2px;
+  background-color: ${(props: { $active?: boolean }) => (props.$active ? T.color.brand : T.color.line)};
+`;
+
+const IntroStep = styled.Text`
+  color: ${T.color.brand};
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+`;
+
+const IntroTitle = styled.Text`
+  font-size: ${scaleFont(22)}px;
+  font-weight: 800;
+  color: ${T.color.ink};
+  margin-bottom: 4px;
+`;
+
+const IntroSubtitle = styled.Text`
+  color: ${T.color.muted};
+  font-size: ${scaleFont(13)}px;
+`;
+
+// ── Cards ───────────────────────────────────────────────────────────────────
+const Card = styled.View`
+  background-color: ${T.color.surface};
+  border-radius: ${T.radius.lg}px;
+  border: 1px solid ${T.color.line};
+  padding: 14px;
+  margin: 0 16px 12px;
+`;
+
+const CardHeading = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+`;
+
+const CardTitle = styled.Text`
+  flex: 1;
+  font-size: ${scaleFont(15)}px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const CardHint = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  font-weight: 600;
+  color: ${T.color.muted};
+`;
+
+const CardSubtitle = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  color: ${T.color.muted};
+  margin-top: -8px;
+  margin-bottom: 8px;
+`;
+
+const DetailRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+`;
+
+const IconCircle = styled.View`
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.brandSoft};
+`;
+
+const DetailTitle = styled.Text`
   font-size: ${scaleFont(14)}px;
-  background-color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? '#f3f4f6' : AppColors.background)};
-  color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? '#6b7280' : AppColors.textDark)};
+  font-weight: 800;
+  color: ${T.color.ink};
 `;
 
-const ApplyCouponButton = styled.TouchableOpacity`
-  background-color: ${AppColors.primary};
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(20)}px;
-  border-radius: ${moderateScale(8)}px;
-  opacity: ${(props: any) => props.disabled ? 0.6 : 1};
+const DetailText = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  line-height: ${scaleFont(17)}px;
+  color: ${T.color.muted};
+  margin-top: 2px;
 `;
 
-const InlineRemoveButton = styled.TouchableOpacity`
-  background-color: ${AppColors.background};
-  border: 1px solid ${AppColors.primary};
-  padding: ${moderateVerticalScale(12)}px ${moderateScale(16)}px;
-  border-radius: ${moderateScale(8)}px;
+const LinkButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  padding: 6px 4px 6px 10px;
 `;
 
-const InlineRemoveText = styled.Text`
-  color: ${AppColors.primary};
-  font-weight: bold;
+const LinkButtonText = styled.Text<{ $danger?: boolean }>`
+  font-size: ${scaleFont(13)}px;
+  font-weight: 800;
+  color: ${(props: { $danger?: boolean }) => (props.$danger ? T.color.danger : T.color.brand)};
+`;
+
+// ── Items ───────────────────────────────────────────────────────────────────
+const ItemRow = styled.View<{ $first?: boolean; $last?: boolean }>`
+  flex-direction: row;
+  align-items: flex-start;
+  padding: 10px 0 ${(props: { $last?: boolean }) => (props.$last ? 0 : 10)}px;
+  border-top-width: ${(props: { $first?: boolean }) => (props.$first ? 0 : 1)}px;
+  border-top-color: ${T.color.line};
+`;
+
+const QuantityBadge = styled.View`
+  min-width: 30px;
+  align-items: center;
+  background-color: ${T.color.brandSoft};
+  border-radius: 6px;
+  padding: 3px 6px;
+  margin-right: 10px;
+`;
+
+const QuantityBadgeText = styled.Text`
+  color: #b75b12;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 800;
+`;
+
+const ItemName = styled.Text`
+  color: ${T.color.ink};
   font-size: ${scaleFont(14)}px;
+  font-weight: 600;
 `;
 
+const ItemDetail = styled.Text`
+  color: ${T.color.muted};
+  font-size: ${scaleFont(11)}px;
+  line-height: ${scaleFont(17)}px;
+  margin-top: 3px;
+`;
+
+const ItemAmount = styled.Text`
+  color: ${T.color.ink};
+  font-size: ${scaleFont(14)}px;
+  font-weight: 700;
+`;
+
+// ── Offers & coupons ────────────────────────────────────────────────────────
 const CouponStatusText = styled.Text`
   font-size: ${scaleFont(12)}px;
   line-height: ${scaleFont(18)}px;
-  color: #666;
-  margin-bottom: ${moderateVerticalScale(10)}px;
+  color: ${T.color.muted};
+  margin-bottom: 10px;
 `;
 
 const OffersList = styled.View`
-  margin-bottom: ${moderateVerticalScale(12)}px;
-  gap: ${moderateVerticalScale(8)}px;
-`;
-
-const OffersListTitle = styled.Text`
-  font-size: ${scaleFont(13)}px;
-  font-weight: 700;
-  color: #333;
+  margin-bottom: 12px;
+  gap: 8px;
 `;
 
 const OfferRow = styled.View<{ $applied?: boolean }>`
   flex-direction: row;
   align-items: center;
-  gap: ${moderateScale(10)}px;
-  padding: ${moderateVerticalScale(10)}px ${moderateScale(12)}px;
-  border-radius: ${moderateScale(10)}px;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: ${T.radius.md}px;
   border-width: 1px;
-  border-color: ${(props: any) => (props.$applied ? AppColors.success : '#f1d9c4')};
-  background-color: ${(props: any) => (props.$applied ? '#effaf3' : '#fff8f1')};
+  border-style: dashed;
+  border-color: ${(props: { $applied?: boolean }) => (props.$applied ? T.color.success : T.color.brandBorder)};
+  background-color: ${(props: { $applied?: boolean }) => (props.$applied ? T.color.successSoft : '#fffaf5')};
 `;
 
 const OfferRowHeadline = styled.Text`
   font-size: ${scaleFont(13)}px;
   font-weight: 700;
-  color: #222;
+  color: ${T.color.ink};
 `;
 
 const OfferRowNote = styled.Text`
   font-size: ${scaleFont(12)}px;
-  color: ${AppColors.success};
+  color: ${T.color.success};
   margin-top: 2px;
 `;
 
@@ -1593,39 +1693,262 @@ const OfferRowHint = styled.Text`
 `;
 
 const OfferRowApplied = styled.Text`
-  font-size: ${scaleFont(12)}px;
-  font-weight: 700;
-  color: ${AppColors.success};
+  font-size: ${scaleFont(11)}px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: ${T.color.success};
 `;
 
-const CouponAppliedText = styled.Text`
+const OutlineButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  border: 1px solid ${T.color.brand};
+  background-color: ${T.color.surface};
+  padding: 7px 14px;
+  border-radius: ${T.radius.sm}px;
+`;
+
+const OutlineButtonText = styled.Text`
+  color: ${T.color.brand};
+  font-weight: 800;
+  font-size: ${scaleFont(13)}px;
+`;
+
+const AppliedCouponBanner = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: ${T.radius.md}px;
+  background-color: ${T.color.successSoft};
+  border: 1px solid #bbf7d0;
+`;
+
+const AppliedCouponIcon = styled.View`
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  align-items: center;
+  justify-content: center;
+  background-color: #dcfce7;
+`;
+
+const AppliedCouponTitle = styled.Text`
+  font-size: ${scaleFont(13)}px;
+  font-weight: 800;
+  color: #166534;
+`;
+
+const AppliedCouponText = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  color: #15803d;
+  margin-top: 1px;
+`;
+
+const CouponContainer = styled.View`
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+`;
+
+const CouponInput = styled.TextInput<{ $disabledInput?: boolean }>`
+  flex: 1;
+  border: 1px solid ${T.color.line};
+  border-radius: ${T.radius.md}px;
+  padding: 11px 12px;
   font-size: ${scaleFont(14)}px;
-  color: ${AppColors.success};
-  margin-bottom: ${moderateVerticalScale(10)}px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  background-color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? '#f5f5f4' : T.color.canvas)};
+  color: ${(props: { $disabledInput?: boolean }) => (props.$disabledInput ? T.color.muted : T.color.ink)};
+`;
+
+const ApplyCouponButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  background-color: ${T.color.brand};
+  padding: 12px 18px;
+  border-radius: ${T.radius.md}px;
+  opacity: ${(props: any) => props.disabled ? 0.5 : 1};
 `;
 
 const ApplyCouponText = styled.Text`
   color: ${AppColors.white};
-  font-weight: bold;
+  font-weight: 800;
   font-size: ${scaleFont(14)}px;
 `;
 
-
-const ViewAllCouponsButton = styled.TouchableOpacity`
+const ViewAllCouponsButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   flex-direction: row;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   min-height: 44px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top-width: 1px;
+  border-top-color: ${T.color.line};
   opacity: ${(props: any) => props.disabled ? 0.45 : 1};
-  margin-top: ${moderateVerticalScale(10)}px;
-  padding: ${moderateVerticalScale(8)}px ${moderateScale(2)}px;
 `;
 
 const ViewAllCouponsText = styled.Text`
-  color: ${AppColors.primary};
+  flex: 1;
+  color: ${T.color.brand};
   font-size: ${scaleFont(13)}px;
   font-weight: 700;
+`;
+
+// ── Bill ────────────────────────────────────────────────────────────────────
+const BillRow = styled.View`
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+`;
+
+const BillLabel = styled.Text<{ $saving?: boolean }>`
+  font-size: ${scaleFont(13)}px;
+  color: ${(props: { $saving?: boolean }) => (props.$saving ? T.color.success : T.color.inkSoft)};
+`;
+
+const BillValue = styled.Text<{ $saving?: boolean }>`
+  font-size: ${scaleFont(13)}px;
+  font-weight: 600;
+  color: ${(props: { $saving?: boolean }) => (props.$saving ? T.color.success : T.color.ink)};
+`;
+
+const GstBreakup = styled.View`
+  margin: 0 0 4px 10px;
+  padding-left: 10px;
+  border-left-width: 2px;
+  border-left-color: ${T.color.line};
+`;
+
+const GstBreakupText = styled.Text`
+  font-size: ${scaleFont(12)}px;
+  color: ${T.color.inkSoft};
+`;
+
+const BillTotalRow = styled.View`
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top-width: 1px;
+  border-top-color: ${T.color.line};
+  border-style: dashed;
+`;
+
+const BillTotalLabel = styled.Text`
+  font-size: ${scaleFont(15)}px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const BillTotalValue = styled.Text`
+  font-size: ${scaleFont(16)}px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const SavingsStrip = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: ${T.radius.sm}px;
+  background-color: ${T.color.successSoft};
+`;
+
+const SavingsStripText = styled.Text`
+  flex: 1;
+  color: #15803d;
+  font-size: ${scaleFont(12)}px;
+  font-weight: 700;
+`;
+
+// ── Payment ─────────────────────────────────────────────────────────────────
+const PaymentOption = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $selected?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  background-color: ${(p: { $selected?: boolean }) => (p.$selected ? '#fffaf5' : T.color.surface)};
+  border: 1.5px solid ${(p: { $selected?: boolean }) => (p.$selected ? T.color.brand : T.color.line)};
+  border-radius: ${T.radius.md}px;
+  padding: 12px;
+  margin-bottom: 8px;
+`;
+
+const PaymentIcon = styled.View<{ $selected?: boolean }>`
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${(p: { $selected?: boolean }) => (p.$selected ? T.color.brandSoft : T.color.canvas)};
+`;
+
+const PaymentOptionTitle = styled.Text`
+  color: ${T.color.ink};
+  font-size: ${scaleFont(14)}px;
+  font-weight: 700;
+`;
+
+const PaymentOptionHint = styled.Text`
+  color: ${T.color.muted};
+  font-size: ${scaleFont(12)}px;
+  line-height: ${scaleFont(17)}px;
+  margin-top: 1px;
+`;
+
+// ── Footer ──────────────────────────────────────────────────────────────────
+const CafeClosedBanner = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  background-color: #fef2f2;
+  border-top-width: 1px;
+  border-top-color: #fecaca;
+  padding: 10px 16px;
+`;
+
+const CafeClosedBannerText = styled.Text`
+  flex: 1;
+  color: ${T.color.danger};
+  font-size: ${scaleFont(13)}px;
+  line-height: ${scaleFont(18)}px;
+`;
+
+const Footer = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  padding: 12px ${PRIMARY_BUTTON_GUTTER}px 0;
+  background-color: ${T.color.surface};
+  border-top-width: 1px;
+  border-top-color: ${T.color.line};
+`;
+
+const FooterTotal = styled.View`
+  min-width: 90px;
+`;
+
+const FooterLabel = styled.Text`
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  color: ${T.color.muted};
+  font-weight: 700;
+  margin-bottom: 2px;
+`;
+
+const FooterAmount = styled.Text`
+  font-size: ${scaleFont(20)}px;
+  font-weight: 800;
+  color: ${T.color.ink};
+`;
+
+const FooterSaved = styled.Text`
+  font-size: 11px;
+  font-weight: 700;
+  color: ${T.color.success};
+  margin-top: 1px;
 `;
 
 // ── Coupon bottom-sheet styles ──────────────────────────────────────
@@ -1636,11 +1959,11 @@ const CouponSheetOverlay = styled.View`
 `;
 
 const CouponSheet = styled.View`
-  background-color: ${AppColors.background};
+  background-color: ${T.color.canvas};
   border-top-left-radius: ${moderateScale(20)}px;
   border-top-right-radius: ${moderateScale(20)}px;
   padding: 0 ${moderateScale(16)}px ${moderateVerticalScale(16)}px;
-  max-height: 70%;
+  max-height: 75%;
 `;
 
 const CouponSheetHandle = styled.View`
@@ -1659,14 +1982,19 @@ const CouponSheetHeader = styled.View`
   padding: ${moderateVerticalScale(8)}px 0 ${moderateVerticalScale(14)}px;
 `;
 
-const CouponSheetCloseBtn = styled.TouchableOpacity`
-  padding: ${moderateScale(4)}px;
+const CouponSheetCloseBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${T.color.line};
 `;
 
 const CouponModalTitle = styled.Text`
   font-size: ${scaleFont(18)}px;
-  font-weight: 700;
-  color: ${AppColors.textDark};
+  font-weight: 800;
+  color: ${T.color.ink};
 `;
 
 const CouponLoadingWrap = styled.View`
@@ -1676,7 +2004,7 @@ const CouponLoadingWrap = styled.View`
 
 const CouponEmptyText = styled.Text`
   text-align: center;
-  color: #999;
+  color: ${T.color.muted};
   padding: ${moderateVerticalScale(32)}px 0;
   font-size: ${scaleFont(14)}px;
 `;
@@ -1685,12 +2013,14 @@ const CouponCard = styled.View<{ applied?: boolean }>`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  background-color: ${(props: any) => props.applied ? '#f0fdf4' : AppColors.lightBackground};
-  border-radius: ${moderateScale(12)}px;
+  background-color: ${(props: any) => props.applied ? T.color.successSoft : T.color.surface};
+  border-radius: ${T.radius.md}px;
   padding: ${moderateVerticalScale(14)}px ${moderateScale(12)}px;
-  margin-bottom: ${moderateVerticalScale(12)}px;
-  border-width: 1.5px;
-  border-color: ${(props: any) => props.applied ? '#22c55e' : AppColors.lightBorder};
+  margin-bottom: ${moderateVerticalScale(10)}px;
+  border-width: 1px;
+  border-left-width: 4px;
+  border-color: ${(props: any) => props.applied ? T.color.success : T.color.line};
+  border-left-color: ${(props: any) => props.applied ? T.color.success : T.color.brand};
 `;
 
 const CouponCardLeft = styled.View`
@@ -1700,15 +2030,15 @@ const CouponCardLeft = styled.View`
 
 const CouponCode = styled.Text`
   font-size: ${scaleFont(15)}px;
-  font-weight: 700;
-  color: ${AppColors.textDark};
+  font-weight: 800;
+  color: ${T.color.ink};
   letter-spacing: 0.5px;
   margin-bottom: ${moderateVerticalScale(4)}px;
 `;
 
 const CouponDesc = styled.Text`
   font-size: ${scaleFont(13)}px;
-  color: #555;
+  color: ${T.color.inkSoft};
   margin-bottom: ${moderateVerticalScale(2)}px;
 `;
 
@@ -1722,28 +2052,27 @@ const CouponUsageText = styled.Text`
 
 const CouponNotEligible = styled.Text`
   font-size: ${scaleFont(12)}px;
-  color: #e07b00;
+  color: #c2410c;
   margin-top: ${moderateVerticalScale(4)}px;
 `;
 
 const CouponExpiry = styled.Text`
   font-size: ${scaleFont(11)}px;
-  color: #999;
+  color: ${T.color.faint};
   margin-top: ${moderateVerticalScale(2)}px;
 `;
 
-const CouponApplyBtn = styled.TouchableOpacity<{ eligible?: boolean; applied?: boolean }>`
+const CouponApplyBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ eligible?: boolean; applied?: boolean }>`
   background-color: ${(props: any) =>
-    props.applied ? '#22c55e' : props.eligible ? AppColors.primary : '#ccc'};
-  padding: ${moderateVerticalScale(10)}px ${moderateScale(18)}px;
-  border-radius: ${moderateScale(8)}px;
-  opacity: ${(props: any) => props.eligible ? 1 : 0.7};
+    props.applied ? T.color.success : props.eligible ? T.color.brand : '#d6d3d1'};
+  padding: ${moderateVerticalScale(9)}px ${moderateScale(16)}px;
+  border-radius: ${T.radius.sm}px;
 `;
 
 const CouponApplyBtnText = styled.Text<{ applied?: boolean }>`
   color: #fff;
   font-size: ${scaleFont(13)}px;
-  font-weight: 700;
+  font-weight: 800;
 `;
 
 const ReserveSheetOverlay = styled.View`
@@ -1781,7 +2110,7 @@ const ReserveHeaderTitle = styled.Text`
   color: #111827;
 `;
 
-const ReserveCloseBtn = styled.TouchableOpacity`
+const ReserveCloseBtn = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   padding: ${moderateScale(4)}px;
 `;
 
@@ -1836,7 +2165,7 @@ const ReserveSlotsScroll = styled.ScrollView`
   max-height: ${moderateVerticalScale(260)}px;
 `;
 
-const ReserveSlotCard = styled.TouchableOpacity<{ $selected: boolean; $disabled: boolean }>`
+const ReserveSlotCard = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })<{ $selected: boolean; $disabled: boolean }>`
   border-width: 1px;
   border-color: ${({ $selected, $disabled }: { $selected: boolean; $disabled: boolean }) => ($disabled ? '#e5e7eb' : $selected ? '#f68712' : '#e5e7eb')};
   background-color: ${({ $selected, $disabled }: { $selected: boolean; $disabled: boolean }) => ($disabled ? '#f9fafb' : $selected ? '#fff7ed' : '#fff')};
@@ -1892,56 +2221,4 @@ const ReserveSummaryValue = styled.Text`
   color: #111827;
   font-size: ${scaleFont(13)}px;
   font-weight: 700;
-`;
-
-const CheckoutIntro = styled.Text`
-  color: #85818a;
-  font-size: ${scaleFont(13)}px;
-  margin: ${moderateScale(18)}px;
-`;
-const CardHeading = styled.View`
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 18px;
-`;
-const CardTitle = styled.Text`
-  flex: 1;
-  font-size: ${scaleFont(16)}px;
-  font-weight: 700;
-  color: #252a36;
-`;
-const QuantityBadge = styled.Text`
-  overflow: hidden;
-  background-color: #fff3e6;
-  color: #b75b12;
-  border-radius: 6px;
-  padding: 4px 6px;
-  margin-right: 10px;
-  font-size: ${scaleFont(12)}px;
-  font-weight: 700;
-`;
-const ItemName = styled.Text`
-  color: #303440;
-  font-size: ${scaleFont(14)}px;
-  font-weight: 600;
-`;
-const ItemDetail = styled.Text`
-  color: #85818a;
-  font-size: ${scaleFont(11)}px;
-  line-height: ${scaleFont(17)}px;
-  margin-top: 4px;
-`;
-const ItemAmount = styled.Text`
-  color: #303440;
-  font-size: ${scaleFont(14)}px;
-  font-weight: 600;
-`;
-const SavingsNote = styled.Text`
-  color: #25854c;
-  background-color: #edf8ef;
-  padding: 10px;
-  border-radius: 8px;
-  font-size: ${scaleFont(12)}px;
-  font-weight: 600;
 `;

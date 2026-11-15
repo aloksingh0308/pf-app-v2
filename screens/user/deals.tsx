@@ -1,6 +1,6 @@
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
+import AppearIn from '@/components/common/AppearIn';
 import AppImage from '@/components/AppImage';
-import { AppColors } from '@/constants/appColors';
 import { showAlert } from '@/services/alertService';
 import { buildCartItemsForDeal, buildDealDescription, fetchActiveDeals, hydrateDealItemNames } from '@/services/dealsService';
 import { DealMenuView } from '@/types/Deal';
@@ -10,6 +10,7 @@ import { ActivityIndicator, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled from 'styled-components/native';
 import { useAddToCartWithRestaurantGuard } from '@/hooks/useAddToCartWithRestaurantGuard';
+import { T } from '@/constants/tokens';
 
 const FALLBACK_DEAL_IMAGE = 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1200&q=80';
 
@@ -89,7 +90,7 @@ export default function DealsScreen() {
 
       {loading ? (
         <Center>
-          <ActivityIndicator size="large" color={AppColors.primary} />
+          <ActivityIndicator size="large" color={T.color.brand} />
         </Center>
       ) : deals.length < 1 ? (
         <EmptyWrap>
@@ -101,12 +102,13 @@ export default function DealsScreen() {
           data={deals}
           keyExtractor={(item) => item.firebaseId}
           contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: contentBottomPadding }}
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
             const description = buildDealDescription(item);
             const dealPrice = Math.max(0, Number(item.pricing?.dealPrice || 0));
             const savingsLabel = getSavingsLabel(item);
 
             return (
+              <AppearIn index={index}>
               <DealCard>
                 <DealImageWrap>
                   <AppImage
@@ -134,6 +136,7 @@ export default function DealsScreen() {
                   </DealFooter>
                 </DealBody>
               </DealCard>
+              </AppearIn>
             );
           }}
         />
@@ -242,7 +245,7 @@ const SavingsText = styled.Text`
   font-weight: 700;
 `;
 
-const AddButton = styled.TouchableOpacity`
+const AddButton = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   border-radius: 9px;
   border-width: 1px;
   border-color: #ffd3a8;

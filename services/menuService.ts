@@ -1,6 +1,6 @@
 import { FoodType, ModifierGroup, ProductWithFirebaseId } from "@/types/Product";
-import { apiClient } from "../utils/apiClient";
-import { getActiveOrgSlug, getActiveBranchCode, getActiveRestaurantId, onActiveRestaurantChanged } from "./restaurantContext";
+import { ApiError, apiClient } from "../utils/apiClient";
+import { getActiveOrgSlug, getActiveBranchCode, getActiveRestaurantId, hasActiveRestaurant, onActiveRestaurantChanged } from "./restaurantContext";
 
 /**
  * Replaces the original Firestore-backed `menuItems`/`productReviews` reads with the
@@ -69,19 +69,29 @@ interface BackendBranchMenu {
   addons: BackendAddon[];
 }
 
-let _branchMenuFetch: Promise<BackendBranchMenu> | null = null;
+let _branchMenuFetch: { key: string; promise: Promise<BackendBranchMenu> } | null = null;
+/** The last menu received, per branch. Opening a restaurant, its customize sheet, product
+ *  details and the cart's add-ons all read this same payload — without a short cache each
+ *  one re-downloaded the whole menu. Live-critical reads pass `fresh`. */
+let _branchMenuCache: { key: string; at: number; menu: BackendBranchMenu } | null = null;
+const BRANCH_MENU_CACHE_MS = 60_000;
 
-/** A single request backs both getMenuItems() and getCategories() when called together
- *  (as restaurant-details.tsx does) — same branch-menu payload, no duplicate round trip. */
-function fetchBranchMenu(): Promise<BackendBranchMenu> {
-  if (!_branchMenuFetch) {
-    _branchMenuFetch = apiClient
-      .get<BackendBranchMenu>(`/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/menu`)
-      .finally(() => {
-        _branchMenuFetch = null;
-      });
+/** One request (shared by concurrent callers) backs getMenuItems/getCategories/getAddons/
+ *  getModifiers; a recent copy of the same branch's menu is reused unless `fresh`. */
+function fetchBranchMenu(options: { fresh?: boolean } = {}): Promise<BackendBranchMenu> {
+  const key = `${getActiveOrgSlug()}/${getActiveBranchCode()}`;
+  if (!options.fresh && _branchMenuCache?.key === key && Date.now() - _branchMenuCache.at < BRANCH_MENU_CACHE_MS) {
+    return Promise.resolve(_branchMenuCache.menu);
   }
-  return _branchMenuFetch;
+  if (_branchMenuFetch?.key !== key) {
+    const request = { key, promise: apiClient.get<BackendBranchMenu>(`/public/branch/${key}/menu`) };
+    _branchMenuFetch = request;
+    request.promise
+      .then((menu) => { _branchMenuCache = { key, at: Date.now(), menu }; })
+      .catch(() => {}) // the caller awaiting `promise` handles the error
+      .finally(() => { if (_branchMenuFetch === request) _branchMenuFetch = null; });
+  }
+  return _branchMenuFetch.promise;
 }
 
 export async function getCategories(): Promise<Array<{ id: string; name: string; icon: string; available: boolean; displayOrder?: number }>> {
@@ -149,6 +159,8 @@ function mapToMenuItem(item: BackendMenuItem): ProductWithFirebaseId {
     couponExcluded: Boolean(item.couponExcluded),
     cafeId: activeRestaurantId,
     restaurantId: activeRestaurantId,
+    orgSlug: hasActiveRestaurant() ? getActiveOrgSlug() : null,
+    branchCode: hasActiveRestaurant() ? getActiveBranchCode() : null,
     emoji: null,
     foodType: item.foodType || "VEG",
     available: item.status === "ACTIVE" && item.isAvailable,
@@ -168,8 +180,8 @@ export function clearMenuCache() {
 
 onActiveRestaurantChanged(clearMenuCache);
 
-export async function getMenuItems(): Promise<ProductWithFirebaseId[]> {
-  const menu = await fetchBranchMenu();
+export async function getMenuItems(options: { fresh?: boolean } = {}): Promise<ProductWithFirebaseId[]> {
+  const menu = await fetchBranchMenu(options);
   const items = menu.items.map(mapToMenuItem).filter((item) => item.available);
   _menuCache = items;
   return items;
@@ -199,11 +211,94 @@ export async function getMenuItemsByFirebaseIds(
   const itemMap = new Map<string, ProductWithFirebaseId>();
   if (cleanIds.length === 0) return itemMap;
 
-  const items = options?.forceRefresh || !_menuCache ? await getMenuItems() : _menuCache;
+  const items = options?.forceRefresh || !_menuCache ? await getMenuItems({ fresh: options?.forceRefresh }) : _menuCache;
   const byId = new Map(items.map((item) => [item.firebaseId, item]));
   cleanIds.forEach((id) => {
     const item = byId.get(id);
     if (item) itemMap.set(id, item);
   });
   return itemMap;
+}
+
+export type MenuPageQuery = {
+  categoryId?: string;
+  q?: string;
+  foodType?: 'VEG' | 'EGG' | 'NON_VEG';
+  sort?: 'PRICE_ASC' | 'PRICE_DESC';
+};
+
+export type MenuPage = {
+  items: ProductWithFirebaseId[];
+  nextCursor: string | null;
+  total: number;
+  /** Matching dishes per category id ("other" = uncategorised) across every page. */
+  categoryCounts: Record<string, number>;
+  /** Every food type on the restaurant's whole menu, whatever the filters. */
+  foodTypes: FoodType[];
+};
+
+export const MENU_PAGE_SIZE = 20;
+
+/** One page of the active restaurant's menu for the menu screen's infinite scroll — filters
+ *  and price sort run on the server (GET /public/branch/:org/:branch/menu/items), so every
+ *  page is a page of matches. The cart, combos and customise sheet still read the whole menu
+ *  through getMenuItems/getModifiers/getAddons. */
+export async function getMenuItemsPage(query: MenuPageQuery, cursor: string | null = null, limit = MENU_PAGE_SIZE): Promise<MenuPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set('cursor', cursor);
+  if (query.categoryId) params.set('categoryId', query.categoryId);
+  if (query.q?.trim()) params.set('q', query.q.trim());
+  if (query.foodType) params.set('foodType', query.foodType);
+  if (query.sort) params.set('sort', query.sort);
+  try {
+    const page = await apiClient.get<{ items: BackendMenuItem[]; nextCursor: string | null; total: number; categoryCounts: Record<string, number>; foodTypes: FoodType[] }>(
+      `/public/branch/${getActiveOrgSlug()}/${getActiveBranchCode()}/menu/items?${params.toString()}`
+    );
+    return { ...page, items: page.items.map(mapToMenuItem).filter((item) => item.available) };
+  } catch (error) {
+    // A backend deployed before this endpoint existed answers "Route not found" — page the
+    // whole-menu payload on the device instead, so the menu never comes up empty.
+    if (error instanceof ApiError && error.status === 404 && /^Route not found/i.test(error.message)) {
+      return pageMenuLocally(query, cursor, limit);
+    }
+    throw error;
+  }
+}
+
+/** Same filters, order and paging as the server's getBranchMenuItemsPage, over the whole menu. */
+async function pageMenuLocally(query: MenuPageQuery, cursor: string | null, limit: number): Promise<MenuPage> {
+  const [items, categories] = await Promise.all([getMenuItems(), getCategories()]);
+  const rank = new Map(categories.map((category, index) => [category.id, index]));
+  const rankOf = (item: ProductWithFirebaseId) => rank.get(String(item.categoryId || '')) ?? Number.MAX_SAFE_INTEGER;
+  const typeOf = (item: ProductWithFirebaseId) => String(item.foodType || 'VEG');
+  const q = query.q?.trim().toLowerCase();
+  const matches = items.filter((item) => {
+    if (query.categoryId && String(item.categoryId || '') !== query.categoryId) return false;
+    if (query.foodType) {
+      const type = typeOf(item);
+      if (query.foodType === 'VEG' ? type !== 'VEG' && type !== 'VEGAN' : type !== query.foodType) return false;
+    }
+    if (q && !`${item.name || ''} ${item.description || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  matches.sort((a, b) => {
+    const byCategory = rankOf(a) - rankOf(b);
+    if (byCategory !== 0 || !query.sort) return byCategory;
+    return query.sort === 'PRICE_ASC' ? a.price - b.price : b.price - a.price;
+  });
+  const categoryCounts: Record<string, number> = {};
+  matches.forEach((item) => {
+    const key = rank.has(String(item.categoryId || '')) ? String(item.categoryId) : 'other';
+    categoryCounts[key] = (categoryCounts[key] || 0) + 1;
+  });
+  const start = Number(cursor) || 0;
+  const pageItems = matches.slice(start, start + limit);
+  const next = start + pageItems.length;
+  return {
+    items: pageItems,
+    nextCursor: next < matches.length ? String(next) : null,
+    total: matches.length,
+    categoryCounts,
+    foodTypes: [...new Set(items.map(typeOf))] as FoodType[],
+  };
 }

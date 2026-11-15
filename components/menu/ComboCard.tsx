@@ -1,7 +1,7 @@
 import React from 'react';
 import styled from 'styled-components/native';
 
-const Card = styled.TouchableOpacity`
+const Card = styled.TouchableOpacity.attrs({ activeOpacity: 0.8 })`
   width: 220px;
   background: #fff7ed;
   border-radius: 18px;
@@ -60,7 +60,7 @@ const OffText = styled.Text`
 
 export default function ComboCard({ combo, onPress }: { combo: any, onPress: () => void }) {
   return (
-    <Card activeOpacity={0.9} onPress={onPress}>
+    <Card activeOpacity={0.8} onPress={onPress}>
       <ComboTitle>🔥 {combo.name}</ComboTitle>
       <SaveBadge>
         <SaveText>Save ₹{combo.saveAmount}</SaveText>

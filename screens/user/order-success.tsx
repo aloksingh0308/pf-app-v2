@@ -1,6 +1,6 @@
 import PageHeader, { PageScreen } from '@/components/common/PageHeader';
 import ScratchRewardModal from '@/components/common/ScratchRewardModal';
-import { Palette } from '@/components/common/ListSection';
+import { T } from '@/constants/tokens';
 import { getMyOrdersPage } from '@/services/orderService';
 import { rewardService, type GeneratedReward } from '@/services/rewardService';
 import { OrderType } from '@/types/enums';
@@ -12,8 +12,6 @@ import { ActivityIndicator, BackHandler, Pressable, ScrollView, StyleSheet, Text
 import Animated, { FadeInDown, ZoomIn } from 'react-native-reanimated';
 import { BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useSelector } from 'react-redux';
-import { RootState } from '../../store';
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -68,13 +66,13 @@ export default function OrderSuccessScreen() {
     scheduledSlotLabel?: string;
   }>();
   const insets = useSafeAreaInsets();
-  const authUser = useSelector((state: RootState) => state.auth.user);
 
   const [loading, setLoading] = useState(true);
   const [reward, setReward] = useState<GeneratedReward | null>(null);
   const [showScratchCard, setShowScratchCard] = useState(false);
   const [scratchModalVisible, setScratchModalVisible] = useState(false);
   const [order, setOrder] = useState<OrderSummary | null>(null);
+  const [footerHeight, setFooterHeight] = useState(96);
 
   const normalizedOrderId = String(orderId || '').trim();
   const isOrderUpdate = String(isUpdate || '').toLowerCase() === 'true';
@@ -106,19 +104,12 @@ export default function OrderSuccessScreen() {
           return;
         }
 
+        // New scratch cards are no longer generated (2026-11-09) — only a card this order
+        // already has (from before) is shown.
         const existingReward = await rewardService.getRewardForOrder(normalizedOrderId);
-        if (existingReward) {
-          if (active) {
-            setReward(existingReward);
-            setShowScratchCard(!existingReward.reward.scratched);
-          }
-          return;
-        }
-
-        const generatedReward = await rewardService.generateReward(normalizedOrderId, authUser?.uid || null);
-        if (active && generatedReward) {
-          setReward(generatedReward);
-          setShowScratchCard(!generatedReward.reward.scratched);
+        if (existingReward && active) {
+          setReward(existingReward);
+          setShowScratchCard(!existingReward.reward.scratched);
         }
       } catch (error) {
         if (active) {
@@ -136,7 +127,7 @@ export default function OrderSuccessScreen() {
     return () => {
       active = false;
     };
-  }, [normalizedOrderId, authUser?.uid, isOrderUpdate, isScheduledOrder]);
+  }, [normalizedOrderId, isOrderUpdate, isScheduledOrder]);
 
   // The order summary card — the order was just placed, so it's on the first history page.
   useEffect(() => {
@@ -186,11 +177,6 @@ export default function OrderSuccessScreen() {
         });
         return;
       }
-
-      const generatedReward = await rewardService.generateReward(normalizedOrderId, authUser?.uid || null);
-      if (generatedReward) {
-        setReward(generatedReward);
-      }
     } catch (_) {
       // Do not block UI for metadata update.
     }
@@ -238,8 +224,8 @@ export default function OrderSuccessScreen() {
 
   return (
     <PageScreen style={styles.page}>
-      <PageHeader title={headerText} onBack={goHome} />
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]} showsVerticalScrollIndicator={false}>
+      <PageHeader title="" onBack={goHome} />
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: footerHeight + 16 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.hero}>
           <Animated.View entering={ZoomIn.springify().damping(12)} style={styles.checkRing}>
             <View style={styles.checkCircle}>
@@ -274,20 +260,26 @@ export default function OrderSuccessScreen() {
               <>
                 {order.restaurantName ? (
                   <View style={[styles.row, { marginTop: 12 }]}>
-                    <Ionicons name="storefront-outline" size={16} color={Palette.textSecondary} />
+                    <Ionicons name="storefront-outline" size={16} color={T.color.muted} />
                     <Text style={styles.metaText} numberOfLines={1}>{order.restaurantName}</Text>
                   </View>
                 ) : null}
                 <View style={styles.divider} />
                 <View style={styles.rowBetween}>
-                  <Text style={styles.metaText}>{order.itemCount} {order.itemCount === 1 ? 'item' : 'items'}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.metaText}>{order.itemCount} {order.itemCount === 1 ? 'item' : 'items'}</Text>
+                    {order.amountDue > 0 ? (
+                      <Text style={styles.dueText}>
+                        {Math.abs(order.amountDue - order.total) < 0.01
+                          ? `Pay ${isDelivery ? 'on delivery' : 'at the restaurant'}`
+                          : `₹${order.amountDue.toFixed(2)} to pay ${isDelivery ? 'on delivery' : 'at the restaurant'}`}
+                      </Text>
+                    ) : (
+                      <Text style={styles.paidText}>Paid</Text>
+                    )}
+                  </View>
                   <Text style={styles.total}>₹{order.total.toFixed(2)}</Text>
                 </View>
-                {order.amountDue > 0 ? (
-                  <Text style={styles.dueText}>₹{order.amountDue.toFixed(2)} to pay {isDelivery ? 'on delivery' : 'at the restaurant'}</Text>
-                ) : (
-                  <Text style={styles.paidText}>Paid</Text>
-                )}
               </>
             ) : null}
           </Animated.View>
@@ -299,16 +291,16 @@ export default function OrderSuccessScreen() {
               accessibilityRole="button"
               disabled={rewardScratched}
               onPress={() => setScratchModalVisible(true)}
-              style={({ pressed }) => [styles.rewardCard, rewardScratched && styles.rewardCardDone, pressed && { opacity: 0.9 }]}
+              style={({ pressed }) => [styles.rewardCard, rewardScratched && styles.rewardCardDone, pressed && { opacity: 0.8 }]}
             >
-              <View style={[styles.rewardIcon, rewardScratched && { backgroundColor: Palette.successSoft }]}>
-                <Ionicons name={rewardScratched ? 'checkmark-circle' : 'gift'} size={24} color={rewardScratched ? Palette.success : '#fff'} />
+              <View style={[styles.rewardIcon, rewardScratched && { backgroundColor: T.color.successSoft }]}>
+                <Ionicons name={rewardScratched ? 'checkmark-circle' : 'gift'} size={24} color={rewardScratched ? T.color.success : '#fff'} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.rewardTitle, rewardScratched && { color: Palette.text }]}>
+                <Text style={[styles.rewardTitle, rewardScratched && { color: T.color.ink }]}>
                   {rewardScratched ? reward.deal?.title || 'Reward unlocked' : 'You won a scratch card!'}
                 </Text>
-                <Text style={[styles.rewardBody, rewardScratched && { color: Palette.textSecondary }]}>
+                <Text style={[styles.rewardBody, rewardScratched && { color: T.color.muted }]}>
                   {rewardScratched
                     ? rewardIsCoins
                       ? 'Coins added to your Reward coins.'
@@ -328,7 +320,7 @@ export default function OrderSuccessScreen() {
               <View key={step.title} style={styles.step}>
                 <View style={styles.stepRail}>
                   <View style={[styles.stepDot, index === 0 && styles.stepDotActive]}>
-                    <Ionicons name={step.icon} size={16} color={index === 0 ? '#fff' : Palette.primary} />
+                    <Ionicons name={step.icon} size={16} color={index === 0 ? '#fff' : T.color.brand} />
                   </View>
                   {index < steps.length - 1 ? <View style={styles.stepLine} /> : null}
                 </View>
@@ -341,33 +333,9 @@ export default function OrderSuccessScreen() {
           </Animated.View>
         ) : null}
 
-        {loading ? (
-          <ActivityIndicator color={Palette.primary} style={{ marginTop: 8 }} />
-        ) : (
-          <View style={{ gap: 10, marginTop: 4 }}>
-            {isDelivery ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => router.replace({ pathname: '/user/track-order', params: { orderId: normalizedOrderId } } as never)}
-                style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
-              >
-                <Ionicons name="navigate" size={18} color="#fff" />
-                <Text style={styles.primaryBtnText}>Track order</Text>
-              </Pressable>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleContinue}
-              style={({ pressed }) => [isDelivery ? styles.secondaryBtn : styles.primaryBtn, pressed && { opacity: 0.9 }]}
-            >
-              <Ionicons name="receipt-outline" size={18} color={isDelivery ? Palette.primary : '#fff'} />
-              <Text style={isDelivery ? styles.secondaryBtnText : styles.primaryBtnText}>View my orders</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" onPress={goHome} style={styles.linkBtn}>
-              <Text style={styles.linkBtnText}>Back to home</Text>
-            </Pressable>
-          </View>
-        )}
+        <Pressable accessibilityRole="button" onPress={goHome} style={styles.linkBtn}>
+          <Text style={styles.linkBtnText}>Back to home</Text>
+        </Pressable>
 
         {ORDER_SUCCESS_BANNER_AD_UNIT_ID ? (
           <View style={styles.ad}>
@@ -379,6 +347,26 @@ export default function OrderSuccessScreen() {
           </View>
         ) : null}
       </ScrollView>
+
+      <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]} onLayout={(event) => setFooterHeight(event.nativeEvent.layout.height)}>
+        {loading ? (
+          <ActivityIndicator color={T.color.brand} style={{ paddingVertical: 14 }} />
+        ) : (
+          <View style={styles.footerRow}>
+            <Pressable accessibilityRole="button" onPress={handleContinue} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.8 }]}>
+              <Text style={styles.secondaryBtnText}>My orders</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.replace({ pathname: '/user/track-order', params: { orderId: normalizedOrderId } } as never)}
+              style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name={isDelivery ? 'navigate' : 'receipt-outline'} size={18} color="#fff" />
+              <Text style={styles.primaryBtnText}>{isDelivery ? 'Track order' : 'Order status'}</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
 
       <ScratchRewardModal
         visible={scratchModalVisible && Boolean(reward) && !rewardScratched}
@@ -401,52 +389,54 @@ export default function OrderSuccessScreen() {
 }
 
 const cardBase = {
-  backgroundColor: '#fff',
-  borderRadius: 18,
+  backgroundColor: T.color.surface,
+  borderRadius: T.radius.lg,
   padding: 16,
-  borderWidth: StyleSheet.hairlineWidth,
-  borderColor: '#e6e6ea',
+  borderWidth: 1,
+  borderColor: T.color.line,
 } as const;
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: Palette.page },
+  page: { flex: 1, backgroundColor: T.color.canvas },
   content: { padding: 16, gap: 12 },
-  hero: { alignItems: 'center', paddingTop: 12, paddingBottom: 4 },
-  checkRing: { width: 104, height: 104, borderRadius: 52, backgroundColor: '#dcf5e3', alignItems: 'center', justifyContent: 'center' },
-  checkCircle: { width: 76, height: 76, borderRadius: 38, backgroundColor: '#16a34a', alignItems: 'center', justifyContent: 'center' },
-  title: { marginTop: 14, fontSize: 24, fontWeight: '800', color: Palette.text },
-  subtitle: { marginTop: 6, fontSize: 14, color: Palette.textSecondary, textAlign: 'center', paddingHorizontal: 16, lineHeight: 20 },
+  hero: { alignItems: 'center', paddingBottom: 6 },
+  checkRing: { width: 92, height: 92, borderRadius: 46, backgroundColor: T.color.successSoft, alignItems: 'center', justifyContent: 'center' },
+  checkCircle: { width: 68, height: 68, borderRadius: 34, backgroundColor: T.color.success, alignItems: 'center', justifyContent: 'center' },
+  title: { marginTop: 14, fontSize: 24, fontWeight: '800', color: T.color.ink },
+  subtitle: { marginTop: 6, fontSize: 14, color: T.color.muted, textAlign: 'center', paddingHorizontal: 16, lineHeight: 20 },
   card: { ...cardBase },
-  cardLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1, color: Palette.textMuted, marginBottom: 6 },
+  cardLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1, color: T.color.faint, marginBottom: 6 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  orderNumber: { fontSize: 20, fontWeight: '800', color: Palette.text },
-  typePill: { backgroundColor: Palette.primarySoft, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5 },
-  typePillText: { color: Palette.primary, fontWeight: '800', fontSize: 12 },
-  metaText: { flex: 1, fontSize: 14, color: Palette.textSecondary },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: Palette.hairline, marginVertical: 12 },
-  total: { fontSize: 20, fontWeight: '900', color: Palette.text },
-  dueText: { marginTop: 4, fontSize: 12.5, fontWeight: '600', color: '#b45309', textAlign: 'right' },
-  paidText: { marginTop: 4, fontSize: 12.5, fontWeight: '700', color: Palette.success, textAlign: 'right' },
-  reserveDate: { fontSize: 15, fontWeight: '700', color: Palette.text },
-  reserveSlot: { fontSize: 24, fontWeight: '900', color: Palette.primary, marginVertical: 4 },
-  muted: { fontSize: 12.5, color: Palette.textSecondary, lineHeight: 18 },
-  rewardCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 18, padding: 16, backgroundColor: Palette.primary },
+  orderNumber: { fontSize: 18, fontWeight: '800', color: T.color.ink },
+  typePill: { backgroundColor: T.color.brandSoft, borderRadius: T.radius.pill, paddingHorizontal: 10, paddingVertical: 5 },
+  typePillText: { color: T.color.brand, fontWeight: '800', fontSize: 12 },
+  metaText: { flex: 1, fontSize: 14, color: T.color.inkSoft },
+  divider: { height: 1, backgroundColor: T.color.line, marginVertical: 12 },
+  total: { fontSize: 20, fontWeight: '800', color: T.color.ink },
+  dueText: { marginTop: 2, fontSize: 12, fontWeight: '700', color: '#b45309' },
+  paidText: { marginTop: 2, fontSize: 12, fontWeight: '700', color: T.color.success },
+  reserveDate: { fontSize: 15, fontWeight: '700', color: T.color.ink },
+  reserveSlot: { fontSize: 24, fontWeight: '900', color: T.color.brand, marginVertical: 4 },
+  muted: { fontSize: 12.5, color: T.color.muted, lineHeight: 18 },
+  rewardCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: T.radius.lg, padding: 14, backgroundColor: T.color.brand },
   rewardCardDone: { ...cardBase },
-  rewardIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
-  rewardTitle: { fontSize: 16, fontWeight: '800', color: '#fff' },
+  rewardIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
+  rewardTitle: { fontSize: 15, fontWeight: '800', color: '#fff' },
   rewardBody: { fontSize: 12.5, color: '#fff3e6', marginTop: 2 },
   step: { flexDirection: 'row', gap: 12, marginTop: 8 },
   stepRail: { alignItems: 'center' },
-  stepDot: { width: 32, height: 32, borderRadius: 16, backgroundColor: Palette.primarySoft, alignItems: 'center', justifyContent: 'center' },
-  stepDotActive: { backgroundColor: Palette.primary },
-  stepLine: { flex: 1, width: 2, backgroundColor: '#f3d9bf', marginTop: 4 },
-  stepTitle: { fontSize: 14.5, fontWeight: '700', color: Palette.text, marginTop: 5 },
-  primaryBtn: { minHeight: 52, borderRadius: 14, backgroundColor: Palette.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  stepDot: { width: 30, height: 30, borderRadius: 15, backgroundColor: T.color.brandSoft, alignItems: 'center', justifyContent: 'center' },
+  stepDotActive: { backgroundColor: T.color.brand },
+  stepLine: { flex: 1, width: 2, backgroundColor: T.color.brandBorder, marginTop: 4 },
+  stepTitle: { fontSize: 14, fontWeight: '700', color: T.color.ink, marginTop: 4 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingTop: 12, paddingHorizontal: 16, backgroundColor: T.color.surface, borderTopWidth: 1, borderTopColor: T.color.line },
+  footerRow: { flexDirection: 'row', gap: 10 },
+  primaryBtn: { flex: 1.4, minHeight: 52, borderRadius: 14, backgroundColor: T.color.brand, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  secondaryBtn: { minHeight: 52, borderRadius: 14, backgroundColor: Palette.primarySoft, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  secondaryBtnText: { color: Palette.primary, fontSize: 15, fontWeight: '800' },
+  secondaryBtn: { flex: 1, minHeight: 52, borderRadius: 14, backgroundColor: T.color.surface, borderWidth: 1, borderColor: T.color.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  secondaryBtnText: { color: T.color.ink, fontSize: 15, fontWeight: '700' },
   linkBtn: { alignItems: 'center', paddingVertical: 8 },
-  linkBtnText: { color: Palette.textSecondary, fontSize: 14, fontWeight: '600' },
+  linkBtnText: { color: T.color.muted, fontSize: 14, fontWeight: '600' },
   ad: { marginTop: 8, alignItems: 'center' },
 });

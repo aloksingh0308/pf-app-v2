@@ -1,9 +1,10 @@
+import Ionicons from '@react-native-vector-icons/ionicons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, LayoutChangeEvent, PanResponder } from 'react-native';
-import Svg, { Circle, Defs, LinearGradient, Mask, Rect, Stop } from 'react-native-svg';
-import styled from 'styled-components/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, Easing, GestureResponderEvent, LayoutChangeEvent, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import Svg, { Circle, Defs, G, LinearGradient, Mask, Path, Rect, Stop } from 'react-native-svg';
+import { T } from '@/constants/tokens';
 
 export type ScratchRewardView = {
   title: string;
@@ -17,529 +18,349 @@ type ScratchCardProps = {
   reward: ScratchRewardView;
   onScratchComplete: () => void;
   onContinue?: () => void;
+  /** Kept for existing call sites — the card always renders in its compact (modal) form. */
   variant?: 'default' | 'embedded';
 };
 
-const SCRATCH_RADIUS = 18;
-const CELL_SIZE = 16;
-const REVEAL_THRESHOLD = 45;
-const MAX_POINTS = 900;
+const SURFACE_HEIGHT = 190;
+const BRUSH_RADIUS = 22;
+/** Coverage grid — a cell counts as scratched once the brush has passed over its centre. */
+const CELL_SIZE = 10;
+const REVEAL_THRESHOLD = 0.5;
+const SPARKLE_COUNT = 16;
 
-type ScratchPoint = { x: number; y: number };
-type SparkleParticle = {
-  id: number;
-  x: number;
-  y: number;
-  tx: number;
-  ty: number;
-  size: number;
-  opacity: Animated.Value;
-  scale: Animated.Value;
-  translateX: Animated.Value;
-  translateY: Animated.Value;
-};
+type Point = { x: number; y: number };
+type Sparkle = { id: number; size: number; color: string; dx: number; dy: number; progress: Animated.Value };
 
-export default function ScratchCard({ reward, onScratchComplete, onContinue, variant = 'default' }: ScratchCardProps) {
-  const [scratchPoints, setScratchPoints] = useState<ScratchPoint[]>([]);
-  const [surfaceSize, setSurfaceSize] = useState({ width: 0, height: 0 });
-  const [scratchedPercent, setScratchedPercent] = useState(0);
-  const [isRevealed, setIsRevealed] = useState(false);
-  const [copyStatus, setCopyStatus] = useState('Copy');
-  const touchedCellsRef = useRef<Set<string>>(new Set());
-  const lastPointRef = useRef<ScratchPoint | null>(null);
-  const hasCompletedRef = useRef(false);
-  const [particles, setParticles] = useState<SparkleParticle[]>([]);
+const SPARKLE_COLORS = ['#fbbf24', T.color.brand, '#f59e0b', '#fb923c'];
 
-  const pulseAnim = useRef(new Animated.Value(0)).current;
-  const revealAnim = useRef(new Animated.Value(0)).current;
+/**
+ * Scratch-to-reveal card. The scratched path is one SVG stroke in the cover's mask (round caps
+ * and joins, so fast swipes leave a continuous trail instead of dotted circles), redrawn at most
+ * once per animation frame. Touches are tracked against the surface's own origin so the finger
+ * never "jumps" when it crosses a child view. Past REVEAL_THRESHOLD of the area the cover fades
+ * out over the real prize, which sits underneath the whole time.
+ */
+export default function ScratchCard({ reward, onScratchComplete, onContinue }: ScratchCardProps) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [pathD, setPathD] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [coverGone, setCoverGone] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [sparkles, setSparkles] = useState<Sparkle[]>([]);
+
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const pathRef = useRef('');
+  const frameRef = useRef<number | null>(null);
+  const originRef = useRef<Point>({ x: 0, y: 0 });
+  const lastRef = useRef<Point | null>(null);
+  const cellsRef = useRef<Set<number>>(new Set());
+  const revealedRef = useRef(false);
+  const completeRef = useRef(onScratchComplete);
+  completeRef.current = onScratchComplete;
+
+  const coverOpacity = useRef(new Animated.Value(1)).current;
+  const hintPulse = useRef(new Animated.Value(0)).current;
+  const prizeScale = useRef(new Animated.Value(0.94)).current;
 
   useEffect(() => {
-    const pulse = Animated.loop(
+    if (revealed) return;
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 0,
-          duration: 900,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
+        Animated.timing(hintPulse, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(hintPulse, { toValue: 0, duration: 800, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
       ])
     );
+    loop.start();
+    return () => loop.stop();
+  }, [revealed, hintPulse]);
 
-    if (!isRevealed) {
-      pulse.start();
+  useEffect(() => () => { if (frameRef.current !== null) cancelAnimationFrame(frameRef.current); }, []);
+
+  const flush = useCallback(() => {
+    if (frameRef.current !== null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      setPathD(pathRef.current);
+      const { width, height } = sizeRef.current;
+      const total = Math.ceil(width / CELL_SIZE) * Math.ceil(height / CELL_SIZE);
+      setProgress(total > 0 ? Math.min(1, cellsRef.current.size / total) : 0);
+    });
+  }, []);
+
+  const reveal = useCallback(() => {
+    if (revealedRef.current) return;
+    revealedRef.current = true;
+    setRevealed(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    completeRef.current();
+
+    const { width, height } = sizeRef.current;
+    const generated: Sparkle[] = Array.from({ length: SPARKLE_COUNT }, (_, id) => {
+      const angle = (Math.PI * 2 * id) / SPARKLE_COUNT + Math.random() * 0.3;
+      const distance = Math.min(width, height) * (0.3 + Math.random() * 0.25);
+      return {
+        id,
+        size: 5 + Math.random() * 5,
+        color: SPARKLE_COLORS[id % SPARKLE_COLORS.length],
+        dx: Math.cos(angle) * distance,
+        dy: Math.sin(angle) * distance,
+        progress: new Animated.Value(0),
+      };
+    });
+    setSparkles(generated);
+
+    Animated.parallel([
+      Animated.timing(coverOpacity, { toValue: 0, duration: 420, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.spring(prizeScale, { toValue: 1, friction: 5, tension: 120, useNativeDriver: true }),
+      ...generated.map((sparkle) =>
+        Animated.timing(sparkle.progress, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true })
+      ),
+    ]).start(() => {
+      setCoverGone(true);
+      setSparkles([]);
+    });
+  }, [coverOpacity, prizeScale]);
+
+  /** Marks every grid cell the brush covers between two points. */
+  const markCells = useCallback((from: Point, to: Point) => {
+    const { width, height } = sizeRef.current;
+    const cols = Math.ceil(width / CELL_SIZE);
+    const rows = Math.ceil(height / CELL_SIZE);
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.max(1, Math.ceil(distance / (BRUSH_RADIUS / 2)));
+    const reach = Math.ceil(BRUSH_RADIUS / CELL_SIZE);
+    for (let step = 0; step <= steps; step++) {
+      const x = from.x + ((to.x - from.x) * step) / steps;
+      const y = from.y + ((to.y - from.y) * step) / steps;
+      const cx = Math.floor(x / CELL_SIZE);
+      const cy = Math.floor(y / CELL_SIZE);
+      for (let gx = cx - reach; gx <= cx + reach; gx++) {
+        if (gx < 0 || gx >= cols) continue;
+        for (let gy = cy - reach; gy <= cy + reach; gy++) {
+          if (gy < 0 || gy >= rows) continue;
+          const centerX = gx * CELL_SIZE + CELL_SIZE / 2;
+          const centerY = gy * CELL_SIZE + CELL_SIZE / 2;
+          if ((centerX - x) ** 2 + (centerY - y) ** 2 <= BRUSH_RADIUS ** 2) cellsRef.current.add(gy * cols + gx);
+        }
+      }
     }
+  }, []);
 
-    return () => {
-      pulse.stop();
+  const pointFrom = (event: GestureResponderEvent): Point => {
+    const { width, height } = sizeRef.current;
+    return {
+      x: Math.max(0, Math.min(width, event.nativeEvent.pageX - originRef.current.x)),
+      y: Math.max(0, Math.min(height, event.nativeEvent.pageY - originRef.current.y)),
     };
-  }, [isRevealed, pulseAnim]);
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => !revealedRef.current,
+      onMoveShouldSetPanResponder: () => !revealedRef.current,
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderGrant: (event) => {
+        // Children are pointerEvents="none", so locationX/Y here are relative to the surface —
+        // fix the origin once and follow pageX/Y for the rest of the stroke.
+        originRef.current = {
+          x: event.nativeEvent.pageX - event.nativeEvent.locationX,
+          y: event.nativeEvent.pageY - event.nativeEvent.locationY,
+        };
+        const point = pointFrom(event);
+        lastRef.current = point;
+        // A zero-length segment draws a dot (round cap) where the finger lands.
+        pathRef.current += `M${point.x.toFixed(1)} ${point.y.toFixed(1)}l0.1 0`;
+        markCells(point, point);
+        Haptics.selectionAsync().catch(() => {});
+        flush();
+      },
+      onPanResponderMove: (event) => {
+        if (revealedRef.current) return;
+        const point = pointFrom(event);
+        const last = lastRef.current;
+        if (last && Math.hypot(point.x - last.x, point.y - last.y) < 2) return;
+        pathRef.current += `L${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+        markCells(last || point, point);
+        lastRef.current = point;
+        flush();
+      },
+      onPanResponderRelease: () => {
+        lastRef.current = null;
+      },
+    })
+  ).current;
 
   useEffect(() => {
-    if (!isRevealed) return;
+    if (!revealed && progress >= REVEAL_THRESHOLD) reveal();
+  }, [progress, revealed, reveal]);
 
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => { });
-
-    Animated.timing(revealAnim, {
-      toValue: 1,
-      duration: 380,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-
-    if (surfaceSize.width > 0 && surfaceSize.height > 0) {
-      const centerX = surfaceSize.width / 2;
-      const centerY = surfaceSize.height / 2;
-      const generated: SparkleParticle[] = Array.from({ length: 14 }, (_, index) => {
-        const angle = (Math.PI * 2 * index) / 14;
-        const distance = 22 + Math.random() * 46;
-        return {
-          id: index,
-          x: centerX,
-          y: centerY,
-          tx: Math.cos(angle) * distance,
-          ty: Math.sin(angle) * distance,
-          size: 4 + Math.random() * 5,
-          opacity: new Animated.Value(0),
-          scale: new Animated.Value(0.3),
-          translateX: new Animated.Value(0),
-          translateY: new Animated.Value(0),
-        };
-      });
-
-      setParticles(generated);
-
-      Animated.parallel(
-        generated.map((particle) =>
-          Animated.parallel([
-            Animated.timing(particle.opacity, {
-              toValue: 1,
-              duration: 120,
-              useNativeDriver: true,
-            }),
-            Animated.timing(particle.scale, {
-              toValue: 1,
-              duration: 220,
-              easing: Easing.out(Easing.cubic),
-              useNativeDriver: true,
-            }),
-            Animated.timing(particle.translateX, {
-              toValue: particle.tx,
-              duration: 360,
-              easing: Easing.out(Easing.cubic),
-              useNativeDriver: true,
-            }),
-            Animated.timing(particle.translateY, {
-              toValue: particle.ty,
-              duration: 360,
-              easing: Easing.out(Easing.cubic),
-              useNativeDriver: true,
-            }),
-          ])
-        )
-      ).start(() => {
-        Animated.parallel(
-          generated.map((particle) =>
-            Animated.timing(particle.opacity, {
-              toValue: 0,
-              duration: 220,
-              useNativeDriver: true,
-            })
-          )
-        ).start();
-      });
-    }
-  }, [isRevealed, revealAnim]);
-
-  const progressText = useMemo(() => {
-    if (isRevealed) return 'Reward unlocked';
-    return `Scratch area: ${scratchedPercent}%`;
-  }, [isRevealed, scratchedPercent]);
-
-  const overlayOpacity = useMemo(() => {
-    if (isRevealed) {
-      return revealAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
-    }
-    return 1;
-  }, [isRevealed, revealAnim]);
-
-  const hintOpacity = pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0.95] });
-
-  const onSurfaceLayout = (event: LayoutChangeEvent) => {
+  const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
-    setSurfaceSize({ width: Math.max(1, width), height: Math.max(1, height) });
+    setSize({ width, height });
   };
 
-  const pushScratchPoint = (point: ScratchPoint) => {
-    if (isRevealed || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      return;
-    }
-
-    const x = Math.max(0, Math.min(surfaceSize.width, point.x));
-    const y = Math.max(0, Math.min(surfaceSize.height, point.y));
-
-    const previous = lastPointRef.current;
-    if (previous) {
-      const dx = x - previous.x;
-      const dy = y - previous.y;
-      if ((dx * dx + dy * dy) < 36) {
-        return;
-      }
-    }
-    lastPointRef.current = { x, y };
-
-    const cellX = Math.floor(x / CELL_SIZE);
-    const cellY = Math.floor(y / CELL_SIZE);
-    touchedCellsRef.current.add(`${cellX}:${cellY}`);
-
-    setScratchPoints((prev) => {
-      if (prev.length >= MAX_POINTS) {
-        return prev;
-      }
-      return [...prev, { x, y }];
-    });
-
-    const totalCells = Math.max(1, Math.ceil(surfaceSize.width / CELL_SIZE) * Math.ceil(surfaceSize.height / CELL_SIZE));
-    const percent = Math.min(100, Math.round((touchedCellsRef.current.size / totalCells) * 100));
-    setScratchedPercent(percent);
-
-    if (percent >= REVEAL_THRESHOLD && !hasCompletedRef.current) {
-      hasCompletedRef.current = true;
-      setIsRevealed(true);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => { });
-      onScratchComplete();
-    }
-  };
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => !isRevealed,
-        onMoveShouldSetPanResponder: () => !isRevealed,
-        onPanResponderGrant: (event) => {
-          pushScratchPoint({
-            x: event.nativeEvent.locationX,
-            y: event.nativeEvent.locationY,
-          });
-        },
-        onPanResponderMove: (event) => {
-          pushScratchPoint({
-            x: event.nativeEvent.locationX,
-            y: event.nativeEvent.locationY,
-          });
-        },
-      }),
-    [isRevealed, surfaceSize.width, surfaceSize.height]
-  );
-
-  const handleCopyCode = async () => {
-    if (reward.isCoinReward) {
-      return;
-    }
+  const copyCode = async () => {
     await Clipboard.setStringAsync(reward.couponCode);
-    setCopyStatus('Copied');
-    setTimeout(() => setCopyStatus('Copy'), 1200);
+    setCopied(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setTimeout(() => setCopied(false), 1400);
   };
+
+  const hintOpacity = hintPulse.interpolate({ inputRange: [0, 1], outputRange: [0.75, 1] });
+  const hintScale = hintPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] });
+  const coins = Math.floor(Number(reward.coinsEarned || 0));
 
   return (
-    <Container style={variant === 'embedded' ? { backgroundColor: 'transparent', borderWidth: 0, padding: 0 } : undefined}>
-      {variant === 'default' ? <HeaderText>Scratch & Win</HeaderText> : null}
-      {variant === 'default' ? <SubText>Scratch the card to reveal your reward coupon.</SubText> : null}
+    <View>
+      <View style={styles.surface} onLayout={onLayout} {...(coverGone ? {} : panResponder.panHandlers)}>
+        {/* The prize — always underneath, so scratching shows it through the cover. */}
+        <Animated.View pointerEvents="none" style={[styles.prize, { transform: [{ scale: prizeScale }] }]}>
+          <View style={styles.prizeIcon}>
+            <Ionicons name={reward.isCoinReward ? 'sparkles' : 'pricetag'} size={22} color={T.color.brand} />
+          </View>
+          {reward.isCoinReward ? (
+            <>
+              <Text style={styles.prizeBig}>{coins > 0 ? `${coins} coins` : 'Reward coins'}</Text>
+              <Text numberOfLines={2} style={styles.prizeText}>{reward.title}</Text>
+            </>
+          ) : (
+            <>
+              <Text numberOfLines={2} style={styles.prizeTitle}>{reward.title}</Text>
+              {reward.description ? <Text numberOfLines={2} style={styles.prizeText}>{reward.description}</Text> : null}
+              <View style={styles.codeChip}><Text selectable style={styles.codeText}>{reward.couponCode}</Text></View>
+            </>
+          )}
+        </Animated.View>
 
-      <CardArea style={variant === 'embedded' ? { marginTop: 0, backgroundColor: '#ffffff', borderColor: '#ffe2c4', padding: 10 } : undefined}>
-        
-        {variant === 'default' ? <RewardTitle>{reward.title}</RewardTitle> : null}
-        {variant === 'default' && reward.description ? (<RewardDescription>{reward.description}</RewardDescription>) : null}
-        {variant === 'default' ? <RewardHint>Scratch the silver layer to unlock your coupon</RewardHint> : null}
-        {!isRevealed ? (
-          <ScratchSurface {...panResponder.panHandlers} onLayout={onSurfaceLayout} style={variant === 'embedded' ? { height: 175, borderRadius: 14, marginTop: 4 } : undefined}>
-            <UnderLayer>
-              <UnderTitle style={variant === 'embedded' ? { fontSize: 34, lineHeight: 38, textAlign: 'center' } : undefined}>{variant === 'embedded' ? 'Scratch here' : reward.title}</UnderTitle>
-              <UnderText style={variant === 'embedded' ? { fontSize: 18, lineHeight: 24, textAlign: 'center' } : undefined}>{variant === 'embedded' ? 'Scratch and reveal your reward' : reward.description}</UnderText>
-            </UnderLayer>
-
-            <AnimatedOverlay style={{ opacity: overlayOpacity }}>
-              {surfaceSize.width > 0 && surfaceSize.height > 0 ? (
-                <Svg width={surfaceSize.width} height={surfaceSize.height}>
-                  <Defs>
-                    <LinearGradient id="scratchGradient" x1="0" y1="0" x2="1" y2="1">
-                      <Stop offset="0" stopColor="#C9CED8" />
-                      <Stop offset="0.45" stopColor="#9EA6B4" />
-                      <Stop offset="1" stopColor="#BDC3CF" />
-                    </LinearGradient>
-                    <Mask id="scratchMask" x="0" y="0" width={surfaceSize.width} height={surfaceSize.height}>
-                      <Rect x="0" y="0" width={surfaceSize.width} height={surfaceSize.height} fill="white" />
-                      {scratchPoints.map((point, index) => (
-                        <Circle
-                          key={`${index}-${point.x}-${point.y}`}
-                          cx={point.x}
-                          cy={point.y}
-                          r={SCRATCH_RADIUS}
-                          fill="black"
-                        />
-                      ))}
-                    </Mask>
-                  </Defs>
-
-                  <Rect
-                    x="0"
-                    y="0"
-                    width={surfaceSize.width}
-                    height={surfaceSize.height}
-                    fill="url(#scratchGradient)"
-                    mask="url(#scratchMask)"
-                    rx="12"
-                  />
-                </Svg>
-              ) : null}
-
-              {!isRevealed ? (
-                <HintOverlay>
-                  <AnimatedHint style={{ opacity: hintOpacity }}>
-                    <MaskText style={variant === 'embedded' ? { fontSize: 18, lineHeight: 22 } : undefined}>Scratch Here</MaskText>
-                    <MaskProgress style={variant === 'embedded' ? { fontSize: 11 } : undefined}>{progressText}</MaskProgress>
-                  </AnimatedHint>
-                </HintOverlay>
-              ) : null}
-            </AnimatedOverlay>
-
-            {particles.map((particle) => (
-              <Sparkle
-                key={particle.id}
-                style={{
-                  width: particle.size,
-                  height: particle.size,
-                  left: particle.x,
-                  top: particle.y,
-                  opacity: particle.opacity,
-                  transform: [
-                    { translateX: particle.translateX },
-                    { translateY: particle.translateY },
-                    { scale: particle.scale },
-                  ],
-                }}
-              />
-            ))}
-          </ScratchSurface>
+        {!coverGone && size.width > 0 ? (
+          <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: coverOpacity }]}>
+            <Svg width={size.width} height={size.height}>
+              <Defs>
+                <LinearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+                  <Stop offset="0" stopColor="#ffa040" />
+                  <Stop offset="0.55" stopColor={T.color.brand} />
+                  <Stop offset="1" stopColor="#e85d00" />
+                </LinearGradient>
+                <Mask id="scratched" x="0" y="0" width={size.width} height={size.height} maskUnits="userSpaceOnUse">
+                  <Rect x="0" y="0" width={size.width} height={size.height} fill="white" />
+                  {pathD ? (
+                    <Path d={pathD} stroke="black" strokeWidth={BRUSH_RADIUS * 2} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                  ) : null}
+                </Mask>
+              </Defs>
+              <G mask="url(#scratched)">
+                <Rect x="0" y="0" width={size.width} height={size.height} fill="url(#cover)" />
+                {/* Confetti dots so the cover reads as a scratch card, not a button. */}
+                {COVER_DOTS.map((dot, index) => (
+                  <Circle key={index} cx={dot.x * size.width} cy={dot.y * size.height} r={dot.r} fill="#ffffff" opacity={0.18} />
+                ))}
+              </G>
+            </Svg>
+            {/* Gone at the first stroke so it never sits on top of the prize showing through. */}
+            {!revealed && !pathD ? (
+              <Animated.View style={[styles.hint, { opacity: hintOpacity, transform: [{ scale: hintScale }] }]}>
+                <Ionicons name="finger-print" size={28} color="#fff" />
+                <Text style={styles.hintTitle}>Scratch here</Text>
+                <Text style={styles.hintText}>Rub with your finger to reveal</Text>
+              </Animated.View>
+            ) : null}
+          </Animated.View>
         ) : null}
-        {isRevealed ? (
-          <RevealArea>
-            {reward.isCoinReward ? (
-              <>
-                <CouponLabel>Reward Coins</CouponLabel>
-                {typeof reward.coinsEarned === 'number' && reward.coinsEarned > 0 ? (
-                  <CoinAmountText>You won {Math.floor(reward.coinsEarned)} coins</CoinAmountText>
-                ) : null}
-                <CoinInfoText>
-                  Coins will be added in Reward coins after you scratch
-                </CoinInfoText>
-              </>
-            ) : (
-              <>
-                <CouponLabel>Coupon Code</CouponLabel>
-                <CouponCode selectable>{reward.couponCode}</CouponCode>
-                <ActionsRow>
-                  <SecondaryButton onPress={handleCopyCode}>
-                    <SecondaryButtonText>{copyStatus}</SecondaryButtonText>
-                  </SecondaryButton>
-                </ActionsRow>
-              </>
-            )}
-          </RevealArea>
-        ) : null}
-      </CardArea>
-    </Container>
+
+        {sparkles.map((sparkle) => (
+          <Animated.View
+            key={sparkle.id}
+            pointerEvents="none"
+            style={[
+              styles.sparkle,
+              {
+                width: sparkle.size,
+                height: sparkle.size,
+                left: size.width / 2,
+                top: size.height / 2,
+                backgroundColor: sparkle.color,
+                opacity: sparkle.progress.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 1, 0] }),
+                transform: [
+                  { translateX: sparkle.progress.interpolate({ inputRange: [0, 1], outputRange: [0, sparkle.dx] }) },
+                  { translateY: sparkle.progress.interpolate({ inputRange: [0, 1], outputRange: [0, sparkle.dy] }) },
+                  { scale: sparkle.progress.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.3, 1.2, 0.6] }) },
+                ],
+              },
+            ]}
+          />
+        ))}
+      </View>
+
+      {revealed ? (
+        <View style={styles.actions}>
+          {reward.isCoinReward ? (
+            <View style={styles.coinNote}>
+              <Ionicons name="checkmark-circle" size={16} color={T.color.success} />
+              <Text numberOfLines={1} style={styles.coinNoteText}>Coins added</Text>
+            </View>
+          ) : (
+            <Pressable accessibilityRole="button" onPress={() => void copyCode()} style={[styles.button, styles.buttonOutline]}>
+              <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={16} color={T.color.brand} />
+              <Text style={styles.buttonOutlineText}>{copied ? 'Copied' : 'Copy code'}</Text>
+            </Pressable>
+          )}
+          {onContinue ? (
+            <Pressable accessibilityRole="button" onPress={onContinue} style={[styles.button, styles.buttonSolid]}>
+              <Text style={styles.buttonSolidText}>Done</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : (
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${Math.round(Math.min(1, progress / REVEAL_THRESHOLD) * 100)}%` }]} />
+        </View>
+      )}
+    </View>
   );
 }
 
-const Container = styled.View`
-  background-color: #fff;
-  border-radius: 14px;
-  border-width: 1px;
-  border-color: #ffd699;
-  padding: 16px;
-`;
+/** Fixed (not random) so the pattern doesn't reshuffle on every redraw. */
+const COVER_DOTS = [
+  { x: 0.08, y: 0.18, r: 5 }, { x: 0.22, y: 0.82, r: 3 }, { x: 0.35, y: 0.12, r: 2.5 }, { x: 0.5, y: 0.9, r: 4 },
+  { x: 0.64, y: 0.1, r: 3.5 }, { x: 0.78, y: 0.78, r: 5 }, { x: 0.92, y: 0.25, r: 3 }, { x: 0.12, y: 0.55, r: 2 },
+  { x: 0.88, y: 0.55, r: 2.5 }, { x: 0.7, y: 0.42, r: 1.8 }, { x: 0.3, y: 0.45, r: 1.8 }, { x: 0.96, y: 0.92, r: 2 },
+];
 
-const HeaderText = styled.Text`
-  font-size: 20px;
-  font-weight: 700;
-  color: #222;
-`;
-
-const SubText = styled.Text`
-  margin-top: 6px;
-  font-size: 13px;
-  color: #555;
-`;
-
-const CardArea = styled.View`
-  margin-top: 16px;
-  border-radius: 12px;
-  background-color: #fff7ea;
-  padding: 14px;
-`;
-
-const RewardTitle = styled.Text`
-  font-size: 18px;
-  font-weight: 700;
-  color: #f68712;
-`;
-
-const RewardDescription = styled.Text`
-  margin-top: 6px;
-  font-size: 14px;
-  color: #333;
-`;
-
-const RewardHint = styled.Text`
-  margin-top: 8px;
-  font-size: 12px;
-  color: #6b7280;
-`;
-
-const ScratchSurface = styled.View`
-  margin-top: 14px;
-  border-radius: 10px;
-  height: 120px;
-  overflow: hidden;
-`;
-
-const UnderLayer = styled.View`
-  flex: 1;
-  border-radius: 10px;
-  border-width: 1px;
-  border-color: #f68712;
-  background-color: #fff;
-  padding: 14px;
-`;
-
-const UnderTitle = styled.Text`
-  color: #f68712;
-  font-size: 18px;
-  font-weight: 800;
-`;
-
-const UnderText = styled.Text`
-  margin-top: 6px;
-  color: #374151;
-  font-size: 13px;
-`;
-
-const AnimatedOverlay = styled(Animated.View)`
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 0;
-`;
-
-const Sparkle = styled(Animated.View)`
-  position: absolute;
-  border-radius: 999px;
-  background-color: #fbbf24;
-`;
-
-const HintOverlay = styled.View`
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  justify-content: center;
-  align-items: center;
-`;
-
-const AnimatedHint = styled(Animated.View)`
-  align-items: center;
-`;
-
-const MaskText = styled.Text`
-  color: #fff;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-`;
-
-const MaskProgress = styled.Text`
-  margin-top: 8px;
-  color: #e5e7eb;
-  font-size: 12px;
-`;
-
-const RevealArea = styled.View`
-  margin-top: 14px;
-  border-radius: 10px;
-  border-width: 1px;
-  border-color: #f68712;
-  padding: 12px;
-  background-color: #fff;
-`;
-
-const CouponLabel = styled.Text`
-  color: #666;
-  font-size: 12px;
-`;
-
-const CouponCode = styled.Text`
-  margin-top: 6px;
-  color: #111;
-  font-size: 20px;
-  font-weight: 800;
-`;
-
-const ActionsRow = styled.View`
-  margin-top: 12px;
-  flex-direction: row;
-  gap: 10px;
-`;
-
-const SecondaryButton = styled.TouchableOpacity`
-  flex: 1;
-  border-radius: 8px;
-  border-width: 1px;
-  border-color: #f68712;
-  align-items: center;
-  justify-content: center;
-  padding: 10px;
-`;
-
-const CoinAmountText = styled.Text`
-  margin-top: 8px;
-  font-size: 20px;
-  font-weight: 800;
-  color: #f68712;
-`;
-
-const CoinInfoText = styled.Text`
-  margin-top: 6px;
-  font-size: 13px;
-  line-height: 19px;
-  color: #444;
-`;
-
-const SecondaryButtonText = styled.Text`
-  color: #f68712;
-  font-size: 14px;
-  font-weight: 600;
-`;
-
-const PrimaryButton = styled.TouchableOpacity`
-  flex: 1;
-  border-radius: 8px;
-  background-color: #f68712;
-  align-items: center;
-  justify-content: center;
-  padding: 10px;
-  opacity: ${(props: any) => (props.disabled ? 0.6 : 1)};
-`;
-
-const PrimaryButtonText = styled.Text`
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-`;
+const styles = StyleSheet.create({
+  surface: { height: SURFACE_HEIGHT, borderRadius: T.radius.lg, overflow: 'hidden', backgroundColor: T.color.surface },
+  prize: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: T.space.lg,
+    borderRadius: T.radius.lg,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: T.color.brandBorder,
+    backgroundColor: T.color.brandSoft,
+  },
+  prizeIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: T.color.surface, alignItems: 'center', justifyContent: 'center', marginBottom: T.space.sm },
+  prizeTitle: { fontSize: T.font.heading, fontWeight: '800', color: T.color.ink, textAlign: 'center' },
+  prizeBig: { fontSize: 28, fontWeight: '900', color: T.color.brand, textAlign: 'center' },
+  prizeText: { marginTop: 4, fontSize: T.font.small, color: T.color.muted, textAlign: 'center' },
+  codeChip: { marginTop: T.space.sm, paddingHorizontal: T.space.md, paddingVertical: 6, borderRadius: T.radius.sm, backgroundColor: T.color.surface, borderWidth: 1, borderColor: T.color.brandBorder },
+  codeText: { fontSize: T.font.title, fontWeight: '800', letterSpacing: 1.2, color: T.color.ink },
+  hint: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  hintTitle: { marginTop: 6, fontSize: 22, fontWeight: '900', color: '#fff' },
+  hintText: { marginTop: 2, fontSize: T.font.small, fontWeight: '600', color: 'rgba(255,255,255,0.9)' },
+  sparkle: { position: 'absolute', borderRadius: 999 },
+  progressTrack: { marginTop: T.space.md, height: 4, borderRadius: 2, backgroundColor: T.color.line, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 2, backgroundColor: T.color.brand },
+  actions: { marginTop: T.space.md, flexDirection: 'row', gap: T.space.sm },
+  button: { flex: 1, minHeight: 46, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', borderRadius: T.radius.md },
+  buttonOutline: { borderWidth: 1, borderColor: T.color.brand, backgroundColor: T.color.surface },
+  buttonOutlineText: { fontSize: T.font.body, fontWeight: '700', color: T.color.brand },
+  buttonSolid: { backgroundColor: T.color.brand },
+  buttonSolidText: { fontSize: T.font.body, fontWeight: '800', color: '#fff' },
+  coinNote: { flex: 1, minHeight: 46, paddingHorizontal: T.space.md, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', borderRadius: T.radius.md, backgroundColor: T.color.successSoft },
+  coinNoteText: { fontSize: T.font.body, fontWeight: '700', color: T.color.success },
+});

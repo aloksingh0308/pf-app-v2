@@ -1,6 +1,18 @@
 import { UserProfile } from '../store/slices/authSlice';
 import { apiClient, ApiError } from '../utils/apiClient';
 
+export type WalletTransactionRow = {
+  _id: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  balanceAfter: number;
+  description: string;
+  createdAt: string;
+  /** `unit: 'coins'` marks a reward-coin movement (same ledger as wallet money). */
+  metadata?: { unit?: string } & Record<string, unknown>;
+};
+const WALLET_PAGE_SIZE = 25;
+
 /**
  * Replaces Firestore's `customers` collection with the restaurant-saas-platform's
  * platform-wide customer-app account (backend/src/models/CustomerAccount.ts,
@@ -94,16 +106,16 @@ export const userService = {
     throw new Error('Client-initiated wallet transactions are not supported — the wallet is only ever changed server-side.');
   },
 
-  listWalletTransactions: async (): Promise<Array<{
-    _id: string;
-    type: 'credit' | 'debit';
-    amount: number;
-    balanceAfter: number;
-    description: string;
-    createdAt: string;
-    /** `unit: 'coins'` marks a reward-coin movement (same ledger as wallet money). */
-    metadata?: { unit?: string } & Record<string, unknown>;
-  }>> => apiClient.get('/public/customers/me/wallet-transactions'),
+  listWalletTransactions: async (): Promise<WalletTransactionRow[]> => apiClient.get('/public/customers/me/wallet-transactions'),
+
+  /** One page of the ledger (newest first) for Wallet history's infinite scroll, with the
+   *  whole ledger's rupee totals. On a backend that doesn't page this yet, everything comes
+   *  back as one page and totals are null (the screen adds them up itself). */
+  pageWalletTransactions: async (page: number, type?: 'credit' | 'debit') => {
+    const result = await apiClient.getPage<WalletTransactionRow>(`/public/customers/me/wallet-transactions${type ? `?type=${type}` : ''}`, page, WALLET_PAGE_SIZE);
+    const totals = (result.meta as (typeof result.meta & { totals?: { credit: number; debit: number } }) | null)?.totals ?? null;
+    return { items: result.items, hasMore: result.hasMore, totals };
+  },
 
   getUserProfile: async (_uid: string, _email?: string | null): Promise<UserProfile | null> => {
     try {
