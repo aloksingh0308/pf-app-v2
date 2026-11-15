@@ -38,3 +38,5 @@ yarn-error.*
 
 app-example
 scripts/serviceAccountKey*.json
+
+android/app/release
